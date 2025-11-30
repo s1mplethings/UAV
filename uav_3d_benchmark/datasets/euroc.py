@@ -56,11 +56,12 @@ def load_euroc_intrinsics(sensor_yaml: Dict):
     else:
         raise KeyError("sensor.yaml missing image size (image_width/height or resolution)")
     fx, fy, cx, cy = sensor_yaml["intrinsics"]
+    # Use PINHOLE; ignore distortion for stability
     return {
-        "model": "PINHOLE" if model.lower() == "pinhole" else "SIMPLE_PINHOLE",
+        "model": "PINHOLE",
         "width": width,
         "height": height,
-        "params": [fx, fy, cx, cy] if model.lower() == "pinhole" else [fx, cx, cy],
+        "params": [fx, fy, cx, cy],
     }
 
 
@@ -160,10 +161,11 @@ def export_colmap_files(cfg: EurocConfig, out_sparse_dir: str, camera_id: int = 
         if intr["model"] == "PINHOLE":
             fx, fy, cx, cy = intr["params"]
             f.write(f"{camera_id} PINHOLE {intr['width']} {intr['height']} {fx} {fy} {cx} {cy}\n")
-        else:
+        elif intr["model"] == "SIMPLE_PINHOLE":
+            fx, cx, cy = intr["params"]
             f.write(
                 f"{camera_id} SIMPLE_PINHOLE {intr['width']} {intr['height']} "
-                f"{intr['params'][0]} {intr['params'][1]} {intr['params'][2]}\n"
+                f"{fx} {cx} {cy}\n"
             )
 
     with open(images_txt, "w") as f:

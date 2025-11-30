@@ -10,7 +10,7 @@ Layout
   - `data/euroc/<sequence>/mav0/...` (e.g., `MH_01_easy`)
   - `data/usegeo/strip1/...` (update paths in `UseGeoConfig` if your layout differs)
 - `outputs/` Generated sparse/dense reconstructions.
-- `scripts/` Convenience entrypoints.
+- `scripts/` Convenience entrypoints (COLMAP + SLAM stub).
 
 Quickstart
 ----------
@@ -21,6 +21,9 @@ pip install -r requirements.txt
 
 # Prepare data folders as above, ensure `colmap` is on PATH.
 python scripts/run_all.py
+
+# SLAM: set SLAM_BIN to your binary and run the stub (edit SLAM_ARGS as needed)
+python scripts/run_slam_stub.py
 ```
 
 Key pieces
