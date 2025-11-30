@@ -1,187 +1,172 @@
 import os
+import shutil
 import subprocess
+from pathlib import Path
 
-
-def resolve_colmap_bin():
-    env_bin = os.environ.get("COLMAP_BIN")
-    candidates = [
-        env_bin,
-        r"C:\Program Files\COLMAP\bin\colmap.exe",
-        r"C:\Program Files\COLMAP\colmap.bat",
-        "colmap",
-    ]
-    for c in candidates:
-        if not c:
-            continue
-        if os.path.exists(c) or c == "colmap":
-            return c
-    return "colmap"
-
-
-COLMAP_BIN = resolve_colmap_bin()
+# 默认 COLMAP 路径，可用环境变量 COLMAP_BIN 覆盖
+DEFAULT_COLMAP_BIN = os.environ.get(
+    "COLMAP_BIN",
+    r"C:\Program Files\COLMAP\bin\colmap.exe",
+)
 
 
 def run_cmd(cmd, cwd=None):
-    print(" ".join(cmd))
-    subprocess.run(cmd, check=True, cwd=cwd)
+    """
+    打印并执行命令，失败抛异常。
+    """
+    print(">>", " ".join(str(c) for c in cmd))
+    subprocess.run(cmd, check=True, cwd=str(cwd) if cwd is not None else None)
 
 
-def _read_camera_from_sparse(sparse_known_dir: str):
-    cam_path = os.path.join(sparse_known_dir, "cameras.txt")
-    with open(cam_path, "r") as f:
+def _read_camera_model_from_sparse(sparse_dir: Path) -> str:
+    """
+    从 sparse_known/cameras.txt 读取模型名称（PINHOLE / SIMPLE_RADIAL 等）。
+    若缺失则返回 SIMPLE_RADIAL 作为兜底。
+    """
+    cam_file = sparse_dir / "cameras.txt"
+    if not cam_file.exists():
+        return "SIMPLE_RADIAL"
+
+    with cam_file.open("r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
             parts = line.split()
-            model = parts[1]
-            params = parts[4:]
-            return model, params
-    return None, None
+            if len(parts) >= 2:
+                return parts[1]
+    return "SIMPLE_RADIAL"
 
 
-def _sparse_exists(sparse_dir: str) -> bool:
-    return os.path.exists(os.path.join(sparse_dir, "cameras.bin")) or os.path.exists(
-        os.path.join(sparse_dir, "cameras.txt")
-    )
-
-
-def _dense_fused_exists(dense_dir: str) -> bool:
-    return os.path.exists(os.path.join(dense_dir, "fused.ply"))
-
-
-def _undistorted_exists(dense_dir: str) -> bool:
-    return os.path.isdir(os.path.join(dense_dir, "images"))
-
-
-def run_colmap_pipeline(
-    image_path: str,
-    sparse_known_dir: str,
-    work_root: str,
-    max_image_size: int = 1000,
-    use_gpu: bool = True,
-    run_dense: bool = True,
-    resume: bool = True,
-):
+def _write_sequential_pairs(images_dir: Path, pairs_path: Path, neighbors: int = 10):
     """
-    image_path: 原始图片所在目录
-    sparse_known_dir: 已知位姿的 cameras.txt / images.txt / points3D.txt 目录
-    work_root: 本次实验输出目录
-    max_image_size: 特征提取前的最大边长下采样
-    use_gpu: PatchMatch 尝试启用 GPU（其他步骤不传 GPU 选项以兼容旧版 COLMAP）
-    run_dense: 是否运行稠密部分
-    resume: 若输出已存在则跳过对应步骤，避免从头跑
+    写顺序 pairs.txt，避免 PatchMatch 没有邻接视图时不产出深度图。
     """
-    os.makedirs(work_root, exist_ok=True)
-    db_path = os.path.join(work_root, "database.db")
-    cam_model, cam_params = _read_camera_from_sparse(sparse_known_dir)
-    image_reader_opts = []
-    if cam_model and cam_params:
-        image_reader_opts = [
-            "--ImageReader.camera_model",
-            cam_model,
-            "--ImageReader.single_camera",
-            "1",
-            "--ImageReader.camera_params",
-            ",".join(cam_params),
-        ]
+    imgs = sorted([p.name for p in images_dir.iterdir() if p.is_file()])
+    pairs_path.parent.mkdir(parents=True, exist_ok=True)
+    with pairs_path.open("w", encoding="utf-8") as f:
+        for i, name in enumerate(imgs):
+            neigh = []
+            for j in range(max(0, i - neighbors), min(len(imgs), i + neighbors + 1)):
+                if j == i:
+                    continue
+                neigh.append(imgs[j])
+            if neigh:
+                f.write(name + " " + " ".join(neigh) + "\n")
+
+
+def run_colmap_pipeline(image_folder, sparse_known, work_root):
+    """
+    精简 COLMAP 流程（已知位姿，跳过 point_triangulator）：
+      1) feature_extractor（相机模型与 sparse_known 一致）
+      2) sequential_matcher
+      3) image_undistorter（直接用 sparse_known）
+      4) patch_match_stereo
+      5) stereo_fusion
+    sparse_known 需至少包含 cameras.txt / images.txt（points3D 可为空）。
+    """
+    image_folder = Path(image_folder)
+    sparse_known = Path(sparse_known)
+    work_root = Path(work_root)
+
+    work_root.mkdir(parents=True, exist_ok=True)
+
+    database_path = work_root / "database.db"
+    dense_root = work_root / "dense"
+
+    # 清理旧数据库和 dense 结果
+    if database_path.exists():
+        database_path.unlink()
+    if dense_root.exists():
+        shutil.rmtree(dense_root)
+
+    colmap_bin = DEFAULT_COLMAP_BIN
+
+    # 从 sparse_known 获取相机模型，保证与 feature_extractor 一致
+    camera_model = _read_camera_model_from_sparse(sparse_known)
+    print(f"[INFO] Using camera model from sparse_known: {camera_model}")
 
     # 1) 特征提取
-    if not (resume and os.path.exists(db_path)):
-        run_cmd(
-            [
-                COLMAP_BIN,
-                "feature_extractor",
-                "--database_path",
-                db_path,
-                "--image_path",
-                image_path,
-                "--SiftExtraction.max_image_size",
-                str(max_image_size),
-            ]
-            + image_reader_opts
-        )
-        # 2) 匹配（顺序）
-        run_cmd(
-            [
-                COLMAP_BIN,
-                "sequential_matcher",
-                "--database_path",
-                db_path,
-            ]
-        )
+    run_cmd(
+        [
+            colmap_bin,
+            "feature_extractor",
+            "--database_path",
+            str(database_path),
+            "--image_path",
+            str(image_folder),
+            "--ImageReader.camera_model",
+            camera_model,
+            "--ImageReader.single_camera",
+            "1",
+        ],
+        cwd=work_root,
+    )
 
-    # 3) 已知位姿三角化
-    sparse_out = os.path.join(work_root, "sparse")
-    if os.path.exists(sparse_out) and not os.path.isdir(sparse_out):
-        os.remove(sparse_out)
-    os.makedirs(sparse_out, exist_ok=True)
-    if not (resume and _sparse_exists(sparse_out)):
-        run_cmd(
-            [
-                COLMAP_BIN,
-                "point_triangulator",
-                "--database_path",
-                db_path,
-                "--image_path",
-                image_path,
-                "--input_path",
-                sparse_known_dir,
-                "--output_path",
-                sparse_out,
-            ]
-        )
+    # 2) 顺序匹配
+    run_cmd(
+        [
+            colmap_bin,
+            "sequential_matcher",
+            "--database_path",
+            str(database_path),
+        ],
+        cwd=work_root,
+    )
 
-    if not run_dense:
-        return None
+    # 3) 直接使用已知 sparse（跳过 point_triangulator）
+    sparse = sparse_known
 
-    # 4) 稠密部分
-    dense_root = os.path.join(work_root, "dense")
-    if os.path.exists(dense_root) and not os.path.isdir(dense_root):
-        os.remove(dense_root)
-    os.makedirs(dense_root, exist_ok=True)
-    if not (resume and _undistorted_exists(dense_root)):
-        run_cmd(
-            [
-                COLMAP_BIN,
-                "image_undistorter",
-                "--image_path",
-                image_path,
-                "--input_path",
-                sparse_out,
-                "--output_path",
-                dense_root,
-            ]
-        )
-    if not (resume and _dense_fused_exists(dense_root)):
-        run_cmd(
-            [
-                COLMAP_BIN,
-                "patch_match_stereo",
-                "--workspace_path",
-                dense_root,
-                "--PatchMatchStereo.gpu_index",
-                "0" if use_gpu else "-1",
-                "--PatchMatchStereo.num_samples",
-                "10",
-                "--PatchMatchStereo.num_iterations",
-                "3",
-                "--PatchMatchStereo.geom_consistency",
-                "0",
-            ]
-        )
-        fused_path = os.path.join(dense_root, "fused.ply")
-        run_cmd(
-            [
-                COLMAP_BIN,
-                "stereo_fusion",
-                "--workspace_path",
-                dense_root,
-                "--output_path",
-                fused_path,
-            ]
-        )
-        return fused_path
+    # 4) 稠密工作区
+    run_cmd(
+        [
+            colmap_bin,
+            "image_undistorter",
+            "--image_path",
+            str(image_folder),
+            "--input_path",
+            str(sparse),
+            "--output_path",
+            str(dense_root),
+            "--output_type",
+            "COLMAP",
+        ],
+        cwd=work_root,
+    )
 
-    fused_path = os.path.join(dense_root, "fused.ply")
+    # 写 pairs.txt，保证 PatchMatch 有邻接图像
+    _write_sequential_pairs(dense_root / "images", dense_root / "stereo" / "pairs.txt")
+
+    # 5) PatchMatch Stereo
+    run_cmd(
+        [
+            colmap_bin,
+            "patch_match_stereo",
+            "--workspace_path",
+            str(dense_root),
+            "--workspace_format",
+            "COLMAP",
+        ],
+        cwd=work_root,
+    )
+
+    # 6) 融合
+    fused_path = dense_root / "fused.ply"
+    run_cmd(
+        [
+            colmap_bin,
+            "stereo_fusion",
+            "--workspace_path",
+            str(dense_root),
+            "--workspace_format",
+            "COLMAP",
+            "--input_type",
+            "geometric",
+            "--output_path",
+            str(fused_path),
+        ],
+        cwd=work_root,
+    )
+
+    print(f"[INFO] Fused point cloud saved to: {fused_path}")
     return fused_path
