@@ -3,8 +3,10 @@ import sys
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
+SRC_ROOT = os.path.join(PROJECT_ROOT, "src")
+for path in (SRC_ROOT, PROJECT_ROOT):
+    if path not in sys.path:
+        sys.path.insert(0, path)
 
 from uav_3d_benchmark.config import EUROC_ROOT, USEGEO_ROOT, OUTPUT_ROOT
 from uav_3d_benchmark.datasets.euroc import EurocConfig, export_colmap_files as euroc_export
