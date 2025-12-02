@@ -13,7 +13,6 @@ dependencies = [
     "numpy",
     "pyyaml",
     "opencv-python",
-    "deep-image-matching",
 ]
 authors = [
     { name = "s1mplethings" },

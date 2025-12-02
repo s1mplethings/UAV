@@ -43,3 +43,4 @@ Notes
 - Geometry helpers live in `uav_3d_benchmark/geometry.py`.
 - If your dataset file names differ (pose/intrinsics for UseGeo), adjust the paths/parsers in `datasets/usegeo.py`.
 - `eval/metrics.py` is a stub for future LiDAR/depth evaluation.
+- deep-image-matching is intentionally *not* a project dependency. The pipeline will auto-create a Python 3.9 conda env (`py39_dim_env`) beside the executable and install DIM there. Make sure `conda` is on PATH; disable the managed env with `--no_dim_env` or in the GUI checkbox if you want to run DIM in the current Python environment.
