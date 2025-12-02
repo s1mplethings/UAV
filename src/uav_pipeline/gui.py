@@ -53,9 +53,14 @@ class PipelineGUI:
         self.pm_gpu_var = tk.StringVar()
         self._add_labeled_entry(frame, "PatchMatch GPU (--patch_match_gpu，可空):", self.pm_gpu_var, row=5)
 
-        # Flags
+        
+        # DIM 分辨率预设
+        self.dim_quality_var = tk.StringVar(value="medium")
+        self._add_labeled_entry(frame, "DIM 分辨率预设 (--dim_quality):", self.dim_quality_var, row=6)
+
+# Flags
         flags = tk.Frame(frame)
-        flags.grid(row=6, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        flags.grid(row=7, column=0, columnspan=3, sticky="w", pady=(8, 0))
         self.use_dim_env_var = tk.BooleanVar(value=True)
         tk.Checkbutton(
             flags,
@@ -71,7 +76,7 @@ class PipelineGUI:
 
         # Run button
         btn = tk.Button(frame, text="开始运行", command=self.run_pipeline_thread, width=20)
-        btn.grid(row=7, column=0, columnspan=3, pady=(12, 0))
+        btn.grid(row=8, column=0, columnspan=3, pady=(12, 0))
         self.run_btn = btn
 
     def _add_labeled_entry(
@@ -139,6 +144,7 @@ class PipelineGUI:
                 skip_dim=self.skip_dim_var.get(),
                 overwrite=self.overwrite_var.get(),
                 use_dim_env=self.use_dim_env_var.get(),
+                dim_quality=self.dim_quality_var.get().strip() or "medium",
             )
         except ValueError:
             messagebox.showerror("参数错误", "GPU 参数必须是整数或留空。")

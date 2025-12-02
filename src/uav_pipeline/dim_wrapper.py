@@ -16,7 +16,13 @@ from deep_image_matching import Config, ImageMatcher
 from deep_image_matching.io.h5_to_db import export_to_colmap
 
 
-def run_dim(dir_path: Path, pipeline: str, output_dir: Path, overwrite: bool) -> tuple[Path, Path, Path]:
+def run_dim(
+    dir_path: Path,
+    pipeline: str,
+    output_dir: Path,
+    overwrite: bool,
+    quality: str = "medium",
+) -> tuple[Path, Path, Path]:
     """
     Run DIM feature extraction + matching and export a COLMAP database.
     Returns (feature_path, match_path, database_path).
@@ -26,6 +32,7 @@ def run_dim(dir_path: Path, pipeline: str, output_dir: Path, overwrite: bool) ->
         "pipeline": pipeline,
         "outs": output_dir,  # Config expects a Path-like with .exists()
         "force": overwrite,
+        "quality": quality,
         # Keep other options at their DIM defaults.
     }
 
@@ -43,6 +50,12 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--dir", required=True, help="Project directory containing an images/ folder.")
     parser.add_argument("--pipeline", default="superpoint+lightglue", help="DIM pipeline name.")
     parser.add_argument(
+        "--quality",
+        default="medium",
+        choices=["highest", "high", "medium", "low", "lowest"],
+        help="DIM image resolution preset (default: medium) to reduce memory usage.",
+    )
+    parser.add_argument(
         "--output",
         default=None,
         help="Output directory for DIM artifacts (features/matches/database). Default: <dir>/dim_outputs",
@@ -54,7 +67,7 @@ def main(argv: list[str] | None = None) -> None:
     output_dir = Path(args.output) if args.output else dir_path / "dim_outputs"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    feat, matches, db = run_dim(dir_path, args.pipeline, output_dir, overwrite=args.overwrite)
+    feat, matches, db = run_dim(dir_path, args.pipeline, output_dir, overwrite=args.overwrite, quality=args.quality)
     print(f"DIM_FEATURES={feat}")
     print(f"DIM_MATCHES={matches}")
     print(f"DIM_DATABASE={db}")

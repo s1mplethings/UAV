@@ -126,6 +126,7 @@ class DeepImageMatchingEnv:
         colmap_bin: str | None = None,
         gpu: int | None = None,
         overwrite: bool = False,
+        quality: str = "medium",
     ):
         """
         Run deep-image-matching inside the managed Python 3.9 environment.
@@ -161,6 +162,8 @@ class DeepImageMatchingEnv:
         ]
         if overwrite:
             cmd.append("--overwrite")
+        if quality:
+            cmd += ["--quality", quality]
 
         self._run(cmd, env=env_vars)
 
@@ -194,12 +197,20 @@ def run_dim_for_scene(
     colmap_bin: str | None = None,
     gpu: int | None = None,
     overwrite: bool = False,
+    quality: str = "medium",
 ):
     """
     Convenience wrapper if you don't want to instantiate the class yourself.
     """
     dim_env = DeepImageMatchingEnv()
-    dim_env.run_dim(dir=scene_dir, pipeline=pipeline, colmap_bin=colmap_bin, gpu=gpu, overwrite=overwrite)
+    dim_env.run_dim(
+        dir=scene_dir,
+        pipeline=pipeline,
+        colmap_bin=colmap_bin,
+        gpu=gpu,
+        overwrite=overwrite,
+        quality=quality,
+    )
 
 
 if __name__ == "__main__":

@@ -27,6 +27,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="deep-image-matching 的 pipeline 名称，默认 superpoint+lightglue。",
     )
     parser.add_argument(
+        "--dim_quality",
+        default="medium",
+        choices=["highest", "high", "medium", "low", "lowest"],
+        help="deep-image-matching 的分辨率预设（默认 medium，可选 highest/high/medium/low/lowest）。",
+    )
+    parser.add_argument(
         "--no_dim_env",
         action="store_true",
         help="Disable the managed Python 3.9 deep-image-matching environment; run DIM in the current Python env.",
@@ -86,6 +92,7 @@ def main(argv: list[str] | None = None) -> None:
         overwrite=args.overwrite,
         use_dim_env=not args.no_dim_env,
         dim_env_name=args.dim_env_name,
+        dim_quality=args.dim_quality,
     )
     run_pipeline(cfg)
 

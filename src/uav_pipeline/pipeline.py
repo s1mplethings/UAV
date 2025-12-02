@@ -88,6 +88,7 @@ class PipelineConfig:
     overwrite: bool = False
     use_dim_env: bool = True
     dim_env_name: str = "py39_dim_env"
+    dim_quality: str = "medium"
 
 
 def run_dim(cfg: PipelineConfig, log: LogFn = _default_log) -> None:
@@ -100,6 +101,7 @@ def run_dim(cfg: PipelineConfig, log: LogFn = _default_log) -> None:
             colmap_bin=cfg.colmap_bin,
             gpu=cfg.gpu,
             overwrite=cfg.overwrite,
+            quality=cfg.dim_quality,
         )
         return
 
@@ -117,6 +119,8 @@ def run_dim(cfg: PipelineConfig, log: LogFn = _default_log) -> None:
     ]
     if cfg.overwrite:
         cmd.append("--overwrite")
+    if cfg.dim_quality:
+        cmd += ["--quality", cfg.dim_quality]
     run_cmd(cmd, log=log, env=env_vars)
 
     # Run COLMAP mapper to produce a sparse model for the downstream dense stage.
