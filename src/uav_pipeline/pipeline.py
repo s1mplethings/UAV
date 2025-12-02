@@ -21,9 +21,25 @@ def _default_log(msg: str) -> None:
 
 
 def run_cmd(cmd: Sequence[str], cwd: Optional[str] = None, log: LogFn = _default_log) -> None:
-    """Run a shell command and raise on failure."""
+    """
+    Run a shell command, stream stdout/stderr to log, and raise on non-zero exit.
+    This makes GUI logs show the real error instead of just returncode.
+    """
     log(f"[RUN] {' '.join(str(c) for c in cmd)}")
-    subprocess.run(cmd, cwd=cwd, check=True)
+    proc = subprocess.Popen(
+        cmd,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        log(line.rstrip())
+    proc.wait()
+    if proc.returncode:
+        raise subprocess.CalledProcessError(proc.returncode, cmd)
 
 
 def find_sparse_model_dir(work_dir: str, log: LogFn = _default_log) -> str:
