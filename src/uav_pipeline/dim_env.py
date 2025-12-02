@@ -1,4 +1,4 @@
-"""
+r"""
 Utility to auto-manage a dedicated Python 3.9 environment for deep-image-matching.
 
 Usage::
@@ -56,15 +56,26 @@ class DeepImageMatchingEnv:
         return conda
 
     def _run(self, cmd: Sequence[str], env: dict[str, str] | None = None, check: bool = True):
+        """
+        Run a command and log stdout even if it fails, so GUI/CLI users can see errors.
+        """
         self.log("[DIM ENV] " + " ".join(map(str, cmd)))
-        result = subprocess.run(
-            cmd,
-            env=env,
-            check=check,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
+        try:
+            result = subprocess.run(
+                cmd,
+                env=env,
+                check=check,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+        except subprocess.CalledProcessError as e:  # log stderr/stdout before re-raising
+            output = e.stdout or ""
+            if output:
+                for line in output.rstrip().splitlines():
+                    self.log(line)
+            raise
+
         if result.stdout:
             # Trim trailing whitespace to keep logs tidy.
             for line in result.stdout.rstrip().splitlines():
@@ -108,7 +119,14 @@ class DeepImageMatchingEnv:
 
         return self.python_exe
 
-    def run_dim(self, dir: str, pipeline: str = "superpoint+lightglue", extra_args: Iterable[str] | None = None):
+    def run_dim(
+        self,
+        dir: str,
+        pipeline: str = "superpoint+lightglue",
+        colmap_bin: str | None = None,
+        gpu: int | None = None,
+        overwrite: bool = False,
+    ):
         """
         Run deep-image-matching inside the managed Python 3.9 environment.
         ``dir`` must contain an ``images`` subdirectory.
@@ -122,21 +140,52 @@ class DeepImageMatchingEnv:
             raise FileNotFoundError(f"{dir_path} 下找不到 images 目录")
 
         env_python = self.ensure_env()
+        dim_output = dir_path / "dim_outputs"
+        env_vars = os.environ.copy()
+        # Limit to a specific GPU if requested.
+        if gpu is not None:
+            env_vars["CUDA_VISIBLE_DEVICES"] = str(gpu)
+        # Make sure our source tree is importable inside the managed env.
+        env_vars["PYTHONPATH"] = str(self.base_dir.parent)
 
         cmd = [
             str(env_python),
             "-m",
-            "deep_image_matching",
+            "uav_pipeline.dim_wrapper",
             "--dir",
             str(dir_path),
             "--pipeline",
             pipeline,
+            "--output",
+            str(dim_output),
         ]
+        if overwrite:
+            cmd.append("--overwrite")
 
-        if extra_args:
-            cmd.extend(extra_args)
+        self._run(cmd, env=env_vars)
 
-        self._run(cmd)
+        # Convert matches to a sparse model via COLMAP mapper (uses host COLMAP binary).
+        if colmap_bin:
+            db_path = dim_output / "database.db"
+            if not db_path.exists():
+                raise FileNotFoundError(f"找不到 COLMAP 数据库: {db_path}")
+
+            sparse_dir = dir_path / "sparse"
+            if overwrite and sparse_dir.exists():
+                shutil.rmtree(sparse_dir)
+            sparse_dir.mkdir(parents=True, exist_ok=True)
+
+            mapper_cmd = [
+                colmap_bin,
+                "mapper",
+                "--database_path",
+                str(db_path),
+                "--image_path",
+                str(images_dir),
+                "--output_path",
+                str(sparse_dir),
+            ]
+            self._run(mapper_cmd)
 
 
 def run_dim_for_scene(scene_dir: str, pipeline: str = "superpoint+lightglue", extra_args: Iterable[str] | None = None):

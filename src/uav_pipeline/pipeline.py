@@ -8,6 +8,7 @@ allows passing a custom logger (e.g., GUI text console).
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -22,7 +23,12 @@ def _default_log(msg: str) -> None:
     print(msg)
 
 
-def run_cmd(cmd: Sequence[str], cwd: Optional[str] = None, log: LogFn = _default_log) -> None:
+def run_cmd(
+    cmd: Sequence[str],
+    cwd: Optional[str] = None,
+    log: LogFn = _default_log,
+    env: Optional[dict[str, str]] = None,
+) -> None:
     """
     Run a shell command, stream stdout/stderr to log, and raise on non-zero exit.
     This makes GUI logs show the real error instead of just returncode.
@@ -31,6 +37,7 @@ def run_cmd(cmd: Sequence[str], cwd: Optional[str] = None, log: LogFn = _default
     proc = subprocess.Popen(
         cmd,
         cwd=cwd,
+        env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -87,31 +94,49 @@ def run_dim(cfg: PipelineConfig, log: LogFn = _default_log) -> None:
     """Run deep-image-matching with the requested pipeline and GPU settings."""
     if cfg.use_dim_env:
         env = DeepImageMatchingEnv(env_name=cfg.dim_env_name, log_fn=log)
-        extra_args: list[str] = []
-        if cfg.overwrite:
-            extra_args.append("--overwrite")
-        if cfg.gpu is not None:
-            extra_args += ["--device", f"cuda:{cfg.gpu}"]
-        env.run_dim(cfg.work_dir, pipeline=cfg.pipeline, extra_args=extra_args)
+        env.run_dim(
+            cfg.work_dir,
+            pipeline=cfg.pipeline,
+            colmap_bin=cfg.colmap_bin,
+            gpu=cfg.gpu,
+            overwrite=cfg.overwrite,
+        )
         return
 
+    env_vars = os.environ.copy()
+    if cfg.gpu is not None:
+        env_vars["CUDA_VISIBLE_DEVICES"] = str(cfg.gpu)
     cmd = [
         sys.executable,
         "-m",
-        "deep_image_matching",
+        "uav_pipeline.dim_wrapper",
         "--dir",
         cfg.work_dir,
         "--pipeline",
         cfg.pipeline,
     ]
-
     if cfg.overwrite:
-        cmd += ["--overwrite"]
+        cmd.append("--overwrite")
+    run_cmd(cmd, log=log, env=env_vars)
 
-    if cfg.gpu is not None:
-        cmd += ["--device", f"cuda:{cfg.gpu}"]
-
-    run_cmd(cmd, log=log)
+    # Run COLMAP mapper to produce a sparse model for the downstream dense stage.
+    dim_output = os.path.join(cfg.work_dir, "dim_outputs")
+    db_path = os.path.join(dim_output, "database.db")
+    sparse_dir = os.path.join(cfg.work_dir, "sparse")
+    if cfg.overwrite and os.path.isdir(sparse_dir):
+        shutil.rmtree(sparse_dir)
+    os.makedirs(sparse_dir, exist_ok=True)
+    mapper_cmd = [
+        cfg.colmap_bin,
+        "mapper",
+        "--database_path",
+        db_path,
+        "--image_path",
+        os.path.join(cfg.work_dir, "images"),
+        "--output_path",
+        sparse_dir,
+    ]
+    run_cmd(mapper_cmd, log=log)
 
 
 def run_colmap_mvs(cfg: PipelineConfig, log: LogFn = _default_log) -> str:
