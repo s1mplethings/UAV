@@ -24,7 +24,7 @@ def run_dim(dir_path: Path, pipeline: str, output_dir: Path, overwrite: bool) ->
     args = {
         "dir": str(dir_path),
         "pipeline": pipeline,
-        "outs": str(output_dir),
+        "outs": output_dir,  # Config expects a Path-like with .exists()
         "force": overwrite,
         # Keep other options at their DIM defaults.
     }

@@ -188,12 +188,18 @@ class DeepImageMatchingEnv:
             self._run(mapper_cmd)
 
 
-def run_dim_for_scene(scene_dir: str, pipeline: str = "superpoint+lightglue", extra_args: Iterable[str] | None = None):
+def run_dim_for_scene(
+    scene_dir: str,
+    pipeline: str = "superpoint+lightglue",
+    colmap_bin: str | None = None,
+    gpu: int | None = None,
+    overwrite: bool = False,
+):
     """
     Convenience wrapper if you don't want to instantiate the class yourself.
     """
     dim_env = DeepImageMatchingEnv()
-    dim_env.run_dim(dir=scene_dir, pipeline=pipeline, extra_args=extra_args)
+    dim_env.run_dim(dir=scene_dir, pipeline=pipeline, colmap_bin=colmap_bin, gpu=gpu, overwrite=overwrite)
 
 
 if __name__ == "__main__":
