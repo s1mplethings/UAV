@@ -56,6 +56,12 @@ class PipelineGUI:
         # Flags
         flags = tk.Frame(frame)
         flags.grid(row=6, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        self.use_dim_env_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(
+            flags,
+            text="Use managed Py3.9 DIM env (conda)",
+            variable=self.use_dim_env_var,
+        ).pack(side=tk.LEFT, padx=(0, 12))
         self.skip_dim_var = tk.BooleanVar(value=False)
         self.overwrite_var = tk.BooleanVar(value=False)
         tk.Checkbutton(flags, text="跳过 deep-image-matching (--skip_dim)", variable=self.skip_dim_var).pack(
@@ -132,6 +138,7 @@ class PipelineGUI:
                 patch_match_gpu=self._str_to_int(self.pm_gpu_var.get()),
                 skip_dim=self.skip_dim_var.get(),
                 overwrite=self.overwrite_var.get(),
+                use_dim_env=self.use_dim_env_var.get(),
             )
         except ValueError:
             messagebox.showerror("参数错误", "GPU 参数必须是整数或留空。")

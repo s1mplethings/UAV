@@ -13,6 +13,8 @@ import sys
 from dataclasses import dataclass
 from typing import Callable, Optional, Sequence
 
+from .dim_env import DeepImageMatchingEnv
+
 LogFn = Callable[[str], None]
 
 
@@ -77,10 +79,22 @@ class PipelineConfig:
     patch_match_gpu: Optional[int] = None
     skip_dim: bool = False
     overwrite: bool = False
+    use_dim_env: bool = True
+    dim_env_name: str = "py39_dim_env"
 
 
 def run_dim(cfg: PipelineConfig, log: LogFn = _default_log) -> None:
     """Run deep-image-matching with the requested pipeline and GPU settings."""
+    if cfg.use_dim_env:
+        env = DeepImageMatchingEnv(env_name=cfg.dim_env_name, log_fn=log)
+        extra_args: list[str] = []
+        if cfg.overwrite:
+            extra_args.append("--overwrite")
+        if cfg.gpu is not None:
+            extra_args += ["--device", f"cuda:{cfg.gpu}"]
+        env.run_dim(cfg.work_dir, pipeline=cfg.pipeline, extra_args=extra_args)
+        return
+
     cmd = [
         sys.executable,
         "-m",
@@ -183,6 +197,10 @@ def run_pipeline(cfg: PipelineConfig, log: LogFn = _default_log) -> str:
     log(f"[INFO] 工作目录: {work_dir}")
     log(f"[INFO] deep-image-matching pipeline: {cfg.pipeline}")
     log(f"[INFO] COLMAP bin: {cfg.colmap_bin}")
+    log(
+        "[INFO] DIM env: "
+        + (f"managed conda env ({cfg.dim_env_name})" if cfg.use_dim_env else "current Python env")
+    )
 
     if not cfg.skip_dim:
         log("\n===== Step 1: deep-image-matching (SuperPoint + LightGlue) =====")
