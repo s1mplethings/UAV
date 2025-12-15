@@ -30,7 +30,16 @@ class DeepImageMatchingEnv:
     - Installs deep-image-matching in that env and reuses it across runs.
     """
 
-    def __init__(self, env_name: str = "py39_dim_env", log_fn: LogFn | None = None):
+    def __init__(
+        self,
+        env_name: str = "py39_dim_env",
+        log_fn: LogFn | None = None,
+        torch_version: str = "2.2.1",
+        torchvision_version: str = "0.17.1",
+        torch_cuda: str = "cu121",
+        torch_index_url: str = "https://download.pytorch.org/whl/cu121",
+        install_cuda_torch: bool = True,
+    ):
         # Compatible with PyInstaller: sys._MEIPASS points to the unpacked temp dir.
         if hasattr(sys, "_MEIPASS"):
             base_dir = Path(sys._MEIPASS)  # type: ignore[attr-defined]
@@ -45,9 +54,14 @@ class DeepImageMatchingEnv:
             self._alt_python = self.env_dir / "Scripts" / "python.exe"
         else:
             self.python_exe = self.env_dir / "bin" / "python"
-            self._alt_python = self.python_exe
+        self._alt_python = self.python_exe
 
         self.log: LogFn = log_fn or (lambda msg: print(msg))
+        self.torch_version = torch_version
+        self.torchvision_version = torchvision_version
+        self.torch_cuda = torch_cuda
+        self.torch_index_url = torch_index_url
+        self.install_cuda_torch = install_cuda_torch
 
     def _find_conda(self) -> str:
         conda = shutil.which("conda")
@@ -115,6 +129,29 @@ class DeepImageMatchingEnv:
 
         # Install DIM deps in the new env.
         self._run([str(self.python_exe), "-m", "pip", "install", "--upgrade", "pip"])
+
+        # Prefer a CUDA build of torch/torchvision if requested.
+        if self.install_cuda_torch:
+            torch_pkgs = []
+            if self.torch_version:
+                torch_pkgs.append(f"torch=={self.torch_version}+{self.torch_cuda}")
+            if self.torchvision_version:
+                torch_pkgs.append(f"torchvision=={self.torchvision_version}+{self.torch_cuda}")
+            if torch_pkgs:
+                self._run(
+                    [
+                        str(self.python_exe),
+                        "-m",
+                        "pip",
+                        "install",
+                        "--upgrade",
+                        "--force-reinstall",
+                        *torch_pkgs,
+                        "--index-url",
+                        self.torch_index_url,
+                    ]
+                )
+
         self._run([str(self.python_exe), "-m", "pip", "install", "deep-image-matching"])
 
         return self.python_exe
