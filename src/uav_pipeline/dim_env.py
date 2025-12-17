@@ -74,60 +74,68 @@ class DeepImageMatchingEnv:
         Run a command and log stdout even if it fails, so GUI/CLI users can see errors.
         """
         self.log("[DIM ENV] " + " ".join(map(str, cmd)))
-        try:
-            result = subprocess.run(
-                cmd,
-                env=env,
-                check=check,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-            )
-        except subprocess.CalledProcessError as e:  # log stderr/stdout before re-raising
-            output = e.stdout or ""
-            if output:
-                for line in output.rstrip().splitlines():
-                    self.log(line)
-            raise
-
-        if result.stdout:
-            # Trim trailing whitespace to keep logs tidy.
-            for line in result.stdout.rstrip().splitlines():
-                self.log(line)
-        return result
+        proc = subprocess.Popen(
+            cmd,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            self.log(line.rstrip())
+        proc.wait()
+        if check and proc.returncode:
+            raise subprocess.CalledProcessError(proc.returncode, cmd)
+        return proc.returncode
 
     def ensure_env(self) -> Path:
         """
         Make sure the dedicated env exists and has deep-image-matching installed.
         Returns the path to python executable within that env.
         """
+        # 1) Resolve python executable for an existing env (if any).
+        env_python: Path | None = None
         if self.python_exe.exists():
+            env_python = self.python_exe
+        elif self._alt_python.exists():
+            env_python = self._alt_python
+
+        # 2) If env exists and DIM imports, we're done.
+        if env_python is not None and self._can_import_dim(env_python):
+            self.python_exe = env_python
             return self.python_exe
 
-        conda = self._find_conda()
-        self.env_dir.mkdir(parents=True, exist_ok=True)
+        # 3) If env is missing, create it.
+        if env_python is None:
+            conda = self._find_conda()
+            self.env_dir.mkdir(parents=True, exist_ok=True)
+            create_cmd = [
+                conda,
+                "create",
+                "-y",
+                "-p",
+                str(self.env_dir),
+                "python=3.9",
+                "-c",
+                "https://repo.anaconda.com/pkgs/main",
+                "--override-channels",
+            ]
+            self._run(create_cmd)
 
-        create_cmd = [
-            conda,
-            "create",
-            "-y",
-            "-p",
-            str(self.env_dir),
-            "python=3.9",
-            "-c",
-            "https://repo.anaconda.com/pkgs/main",
-            "--override-channels",
-        ]
-        self._run(create_cmd)
-
-        if not self.python_exe.exists():
-            # Rare fallback: some setups place python.exe under Scripts on Windows.
-            if self._alt_python.exists():
-                self.python_exe = self._alt_python
+            if self.python_exe.exists():
+                env_python = self.python_exe
+            elif self._alt_python.exists():
+                env_python = self._alt_python
+                self.python_exe = env_python
             else:
                 raise RuntimeError("创建 py39_dim_env 失败，未找到 python 可执行文件。")
+        else:
+            # Env exists but DIM is missing/broken → repair by (re)installing packages.
+            self.python_exe = env_python
 
-        # Install DIM deps in the new env.
+        # 4) Install/repair DIM deps in the env.
         self._run([str(self.python_exe), "-m", "pip", "install", "--upgrade", "pip"])
 
         # Prefer a CUDA build of torch/torchvision if requested.
@@ -156,6 +164,89 @@ class DeepImageMatchingEnv:
 
         return self.python_exe
 
+    def _can_import_dim(self, python_exe: Path) -> bool:
+        try:
+            self._run([str(python_exe), "-c", "import deep_image_matching"], check=True)
+            return True
+        except subprocess.CalledProcessError:
+            return False
+
+    def _build_env_vars(self, gpu: int | None = None) -> dict[str, str]:
+        env_vars = os.environ.copy()
+        if gpu is not None:
+            env_vars["CUDA_VISIBLE_DEVICES"] = str(gpu)
+        # Make sure our source tree is importable inside the managed env.
+        env_vars["PYTHONPATH"] = str(self.base_dir.parent)
+        return env_vars
+
+    def run_dim_wrapper(self, argv: Sequence[str], gpu: int | None = None) -> None:
+        env_python = self.ensure_env()
+        cmd = [str(env_python), "-m", "uav_pipeline.dim_wrapper", *map(str, argv)]
+        self._run(cmd, env=self._build_env_vars(gpu))
+
+    def list_pipelines(self) -> None:
+        """List available DIM pipelines in the managed env."""
+        self.run_dim_wrapper(["--list_pipelines"])
+
+    def probe_pipelines(
+        self,
+        *,
+        scene_dir: str,
+        pipelines: str = "all",
+        quality: str = "lowest",
+        gpu: int | None = None,
+    ) -> None:
+        """Try to initialize pipelines and report OK/FAIL (no matching is run)."""
+        self.run_dim_wrapper(
+            [
+                "--dir",
+                scene_dir,
+                "--pipelines",
+                pipelines,
+                "--quality",
+                quality,
+                "--probe_pipelines",
+                "--print_summary",
+            ],
+            gpu=gpu,
+        )
+
+    def test_pipelines(
+        self,
+        *,
+        scene_dir: str,
+        pipelines: str = "all",
+        output_dir: str | None = None,
+        max_images: int = 2,
+        quality: str = "lowest",
+        overwrite: bool = False,
+        single_camera: bool = True,
+        camera_model: str = "simple-radial",
+        gpu: int | None = None,
+    ) -> None:
+        """Run matching for multiple pipelines on a small subset of images."""
+        out_dir = output_dir or str(Path(scene_dir) / "dim_tests")
+        argv: list[str] = [
+            "--dir",
+            scene_dir,
+            "--pipelines",
+            pipelines,
+            "--quality",
+            quality,
+            "--max_images",
+            str(max_images),
+            "--output",
+            out_dir,
+            "--camera_model",
+            camera_model,
+            "--print_summary",
+        ]
+        if overwrite:
+            argv.append("--overwrite")
+        if not single_camera:
+            argv.append("--multi_camera")
+        self.run_dim_wrapper(argv, gpu=gpu)
+
     def run_dim(
         self,
         dir: str,
@@ -164,6 +255,9 @@ class DeepImageMatchingEnv:
         gpu: int | None = None,
         overwrite: bool = False,
         quality: str = "medium",
+        single_camera: bool = True,
+        camera_model: str = "simple-radial",
+        geom_verification: bool = True,
     ):
         """
         Run deep-image-matching inside the managed Python 3.9 environment.
@@ -177,19 +271,9 @@ class DeepImageMatchingEnv:
         if not images_dir.exists():
             raise FileNotFoundError(f"{dir_path} 下找不到 images 目录")
 
-        env_python = self.ensure_env()
         dim_output = dir_path / "dim_outputs"
-        env_vars = os.environ.copy()
-        # Limit to a specific GPU if requested.
-        if gpu is not None:
-            env_vars["CUDA_VISIBLE_DEVICES"] = str(gpu)
-        # Make sure our source tree is importable inside the managed env.
-        env_vars["PYTHONPATH"] = str(self.base_dir.parent)
 
-        cmd = [
-            str(env_python),
-            "-m",
-            "uav_pipeline.dim_wrapper",
+        argv: list[str] = [
             "--dir",
             str(dir_path),
             "--pipeline",
@@ -198,11 +282,15 @@ class DeepImageMatchingEnv:
             str(dim_output),
         ]
         if overwrite:
-            cmd.append("--overwrite")
+            argv.append("--overwrite")
         if quality:
-            cmd += ["--quality", quality]
+            argv += ["--quality", quality]
+        if not single_camera:
+            argv.append("--multi_camera")
+        if camera_model:
+            argv += ["--camera_model", camera_model]
 
-        self._run(cmd, env=env_vars)
+        self.run_dim_wrapper(argv, gpu=gpu)
 
         # Convert matches to a sparse model via COLMAP mapper (uses host COLMAP binary).
         if colmap_bin:
@@ -214,6 +302,15 @@ class DeepImageMatchingEnv:
             if overwrite and sparse_dir.exists():
                 shutil.rmtree(sparse_dir)
             sparse_dir.mkdir(parents=True, exist_ok=True)
+
+            if geom_verification:
+                geom_cmd = [
+                    colmap_bin,
+                    "geometric_verification",
+                    "--database_path",
+                    str(db_path),
+                ]
+                self._run(geom_cmd)
 
             mapper_cmd = [
                 colmap_bin,
@@ -235,6 +332,9 @@ def run_dim_for_scene(
     gpu: int | None = None,
     overwrite: bool = False,
     quality: str = "medium",
+    single_camera: bool = True,
+    camera_model: str = "simple-radial",
+    geom_verification: bool = True,
 ):
     """
     Convenience wrapper if you don't want to instantiate the class yourself.
@@ -247,6 +347,9 @@ def run_dim_for_scene(
         gpu=gpu,
         overwrite=overwrite,
         quality=quality,
+        single_camera=single_camera,
+        camera_model=camera_model,
+        geom_verification=geom_verification,
     )
 
 

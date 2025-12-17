@@ -89,6 +89,9 @@ class PipelineConfig:
     use_dim_env: bool = True
     dim_env_name: str = "py39_dim_env"
     dim_quality: str = "medium"
+    dim_single_camera: bool = True
+    dim_camera_model: str = "simple-radial"
+    geom_verification: bool = True
 
 
 def run_dim(cfg: PipelineConfig, log: LogFn = _default_log) -> None:
@@ -102,6 +105,9 @@ def run_dim(cfg: PipelineConfig, log: LogFn = _default_log) -> None:
             gpu=cfg.gpu,
             overwrite=cfg.overwrite,
             quality=cfg.dim_quality,
+            single_camera=cfg.dim_single_camera,
+            camera_model=cfg.dim_camera_model,
+            geom_verification=cfg.geom_verification,
         )
         return
 
@@ -121,6 +127,10 @@ def run_dim(cfg: PipelineConfig, log: LogFn = _default_log) -> None:
         cmd.append("--overwrite")
     if cfg.dim_quality:
         cmd += ["--quality", cfg.dim_quality]
+    if not cfg.dim_single_camera:
+        cmd.append("--multi_camera")
+    if cfg.dim_camera_model:
+        cmd += ["--camera_model", cfg.dim_camera_model]
     run_cmd(cmd, log=log, env=env_vars)
 
     # Run COLMAP mapper to produce a sparse model for the downstream dense stage.
@@ -130,6 +140,16 @@ def run_dim(cfg: PipelineConfig, log: LogFn = _default_log) -> None:
     if cfg.overwrite and os.path.isdir(sparse_dir):
         shutil.rmtree(sparse_dir)
     os.makedirs(sparse_dir, exist_ok=True)
+
+    if cfg.geom_verification:
+        geom_cmd = [
+            cfg.colmap_bin,
+            "geometric_verification",
+            "--database_path",
+            db_path,
+        ]
+        run_cmd(geom_cmd, log=log)
+
     mapper_cmd = [
         cfg.colmap_bin,
         "mapper",

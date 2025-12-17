@@ -2,6 +2,44 @@ __pycache__/
 .venv/
 outputs/
 data/
+
+# Local copies / extracted archives
+/UAV/
+
+# Build / packaging
+*.egg-info/
+build/
+dist/
+
+# Tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+
+# Deep-image-matching managed env + artifacts
+py39_dim_env/
+src/uav_pipeline/py39_dim_env/
+dim_outputs/
+dim_tests/
+dim_probes/
+_tmp/
+_tmp_dim_wrapper/
+
+# COLMAP common outputs (avoid committing if work_dir is inside repo)
+colmap/
+sparse/
+dense/
+stereo/
+database.db
+matches.txt
+images.txt
+cameras.txt
+points3D.txt
+*.bin
+*.h5
+*.hdf5
 *.db
 *.ply
 *.bag
