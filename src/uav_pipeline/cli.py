@@ -68,14 +68,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--test_max_images",
         type=int,
-        default=2,
-        help="smoke test 使用 images/ 的前 N 张图（默认 2）。",
+        default=None,
+        help="测试时只用 images/ 的前 N 张图（留空则使用全部）。",
     )
     parser.add_argument(
         "--test_quality",
-        default="lowest",
+        default="low",
         choices=["highest", "high", "medium", "low", "lowest"],
-        help="smoke test 用的 DIM 分辨率预设（默认 lowest，加快测试）。",
+        help="测试用的 DIM 分辨率预设（默认 low）。",
     )
     parser.add_argument(
         "--test_output_dir",
@@ -179,12 +179,12 @@ def main(argv: list[str] | None = None) -> None:
                 args.test_dim_pipelines,
                 "--quality",
                 args.test_quality,
-                "--max_images",
-                str(args.test_max_images),
                 "--camera_model",
                 args.dim_camera_model,
                 "--print_summary",
             ]
+            if args.test_max_images is not None:
+                cmd += ["--max_images", str(args.test_max_images)]
             if args.test_output_dir:
                 cmd += ["--output", args.test_output_dir]
             if args.overwrite:

@@ -217,14 +217,14 @@ class DeepImageMatchingEnv:
         scene_dir: str,
         pipelines: str = "all",
         output_dir: str | None = None,
-        max_images: int = 2,
+        max_images: int | None = None,
         quality: str = "lowest",
         overwrite: bool = False,
         single_camera: bool = True,
         camera_model: str = "simple-radial",
         gpu: int | None = None,
     ) -> None:
-        """Run matching for multiple pipelines on a small subset of images."""
+        """Run matching for multiple pipelines (optionally limit to first N images)."""
         out_dir = output_dir or str(Path(scene_dir) / "dim_tests")
         argv: list[str] = [
             "--dir",
@@ -233,14 +233,14 @@ class DeepImageMatchingEnv:
             pipelines,
             "--quality",
             quality,
-            "--max_images",
-            str(max_images),
             "--output",
             out_dir,
             "--camera_model",
             camera_model,
             "--print_summary",
         ]
+        if max_images is not None:
+            argv += ["--max_images", str(max_images)]
         if overwrite:
             argv.append("--overwrite")
         if not single_camera:

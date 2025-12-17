@@ -1,4 +1,10 @@
-"""Tkinter GUI for the deep-image-matching + COLMAP pipeline."""
+"""Tkinter GUI for the deep-image-matching + COLMAP pipeline.
+
+This GUI is meant to be "ops friendly":
+- Common parameters are grouped and labeled.
+- Key choices are dropdowns instead of free-text when possible.
+- Supports multiple run modes (full pipeline / DIM only / dense only / tests).
+"""
 
 from __future__ import annotations
 
@@ -9,116 +15,214 @@ import tkinter as tk
 import sys
 from tkinter import filedialog, messagebox
 from tkinter.scrolledtext import ScrolledText
+from tkinter import ttk
 
 from .dim_env import DeepImageMatchingEnv
-from .pipeline import PipelineConfig, run_cmd, run_pipeline
+from .pipeline import PipelineConfig, run_cmd, run_colmap_mvs, run_dim as run_dim_step, run_pipeline
+
+DIM_QUALITY_OPTIONS = ("highest", "high", "medium", "low", "lowest")
+CAMERA_MODEL_OPTIONS = ("simple-radial", "simple-pinhole", "pinhole", "opencv")
+
+# Curated defaults for UAV SfM.
+PIPELINE_PRESETS = (
+    "superpoint+lightglue",
+    "superpoint+lightglue_fast",
+    "aliked+lightglue",
+    "disk+lightglue",
+    "sift+kornia_matcher",
+    "sift+lightglue",
+    "loftr",
+    "se2loftr",
+    "roma",
+)
+
+TEST_PIPELINE_RECOMMENDED = "sift+kornia_matcher,sift+lightglue,aliked+lightglue,superpoint+lightglue,loftr,se2loftr,roma"
+
+MODE_FULL = "全流程：DIM → Sparse → Dense"
+MODE_DIM_ONLY = "仅 DIM：特征/匹配 → Sparse"
+MODE_DENSE_ONLY = "仅 Dense：使用已有 Sparse"
 
 
 class PipelineGUI:
     def __init__(self, root: tk.Tk):
         self.root = root
         root.title("UAV DIM + COLMAP Pipeline")
-        root.geometry("720x640")
+        root.minsize(920, 720)
 
         self.log_queue: queue.Queue[str] = queue.Queue()
         self.running = False
 
-        self._build_form()
+        self._style()
+        self._build_layout()
         self._build_log()
         self._poll_logs()
 
-    def _build_form(self) -> None:
-        frame = tk.Frame(self.root)
-        frame.pack(fill=tk.X, padx=12, pady=12)
+    def _style(self) -> None:
+        style = ttk.Style(self.root)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+        style.configure("Title.TLabel", font=("Segoe UI", 11, "bold"))
+        style.configure("Section.TLabelframe.Label", font=("Segoe UI", 10, "bold"))
 
-        # Work dir
+    def _build_layout(self) -> None:
+        outer = ttk.Frame(self.root, padding=12)
+        outer.pack(fill=tk.BOTH, expand=True)
+        self.outer = outer
+
+        header = ttk.Frame(outer)
+        header.pack(fill=tk.X)
+        ttk.Label(header, text="UAV DIM + COLMAP Pipeline", style="Title.TLabel").pack(side=tk.LEFT)
+        ttk.Button(header, text="清空日志", command=self.clear_log).pack(side=tk.RIGHT)
+
+        self.notebook = ttk.Notebook(outer)
+        self.notebook.pack(fill=tk.BOTH, expand=True, pady=(10, 10))
+
+        self.run_tab = ttk.Frame(self.notebook, padding=10)
+        self.test_tab = ttk.Frame(self.notebook, padding=10)
+        self.notebook.add(self.run_tab, text="运行")
+        self.notebook.add(self.test_tab, text="测试")
+
+        self._build_run_tab(self.run_tab)
+        self._build_test_tab(self.test_tab)
+
+    def _build_run_tab(self, parent: ttk.Frame) -> None:
+        # Vars
         self.work_dir_var = tk.StringVar()
-        self._add_labeled_entry(frame, "工作目录 (--dir):", self.work_dir_var, row=0, browse="dir")
-
-        # Colmap bin
         self.colmap_var = tk.StringVar(value="colmap")
-        self._add_labeled_entry(
-            frame, "COLMAP 可执行文件 (--colmap_bin):", self.colmap_var, row=1, browse="file"
-        )
-
-        # Pipeline name
         self.pipeline_var = tk.StringVar(value="superpoint+lightglue")
-        self._add_labeled_entry(frame, "deep-image-matching pipeline (--pipeline):", self.pipeline_var, row=2)
-
-        # Dense dir (optional)
         self.dense_dir_var = tk.StringVar()
-        self._add_labeled_entry(frame, "Dense 输出目录 (--dense_dir，可空):", self.dense_dir_var, row=3, browse="dir")
-
-        # GPU options
         self.gpu_var = tk.StringVar()
-        self._add_labeled_entry(frame, "DIM GPU (--gpu，可空):", self.gpu_var, row=4)
         self.pm_gpu_var = tk.StringVar()
-        self._add_labeled_entry(frame, "PatchMatch GPU (--patch_match_gpu，可空):", self.pm_gpu_var, row=5)
-
-        # DIM 分辨率预设
         self.dim_quality_var = tk.StringVar(value="medium")
-        self._add_labeled_entry(frame, "DIM 分辨率预设 (--dim_quality):", self.dim_quality_var, row=6)
-
-        # DIM 相机模型（写入 database.db 时使用）
         self.dim_camera_model_var = tk.StringVar(value="simple-radial")
-        self._add_labeled_entry(frame, "DIM 相机模型 (--dim_camera_model):", self.dim_camera_model_var, row=7)
+        self.mode_var = tk.StringVar(value=MODE_FULL)
 
-        # DIM pipelines 测试
-        self.test_pipelines_var = tk.StringVar(value="all")
-        self._add_labeled_entry(frame, "DIM pipelines 测试列表 (all/逗号分隔):", self.test_pipelines_var, row=8)
-        self.test_max_images_var = tk.StringVar(value="2")
-        self._add_labeled_entry(frame, "smoke test 使用前 N 张图 (--test_max_images):", self.test_max_images_var, row=9)
-        self.test_quality_var = tk.StringVar(value="lowest")
-        self._add_labeled_entry(frame, "smoke test 分辨率预设 (--test_quality):", self.test_quality_var, row=10)
-
-        test_btns = tk.Frame(frame)
-        test_btns.grid(row=11, column=0, columnspan=3, sticky="w", pady=(6, 0))
-        self.preset_pipelines_btn = tk.Button(
-            test_btns,
-            text="填入推荐列表",
-            command=self.fill_recommended_pipelines,
-        )
-        self.preset_pipelines_btn.pack(side=tk.LEFT, padx=(0, 8))
-        self.list_pipelines_btn = tk.Button(test_btns, text="列出 DIM pipelines", command=self.list_pipelines_thread)
-        self.list_pipelines_btn.pack(side=tk.LEFT, padx=(0, 8))
-        self.probe_pipelines_btn = tk.Button(test_btns, text="Probe pipelines", command=self.probe_pipelines_thread)
-        self.probe_pipelines_btn.pack(side=tk.LEFT, padx=(0, 8))
-        self.test_pipelines_btn = tk.Button(test_btns, text="跑 smoke test", command=self.test_pipelines_thread)
-        self.test_pipelines_btn.pack(side=tk.LEFT)
-
-        # Flags
-        flags = tk.Frame(frame)
-        flags.grid(row=12, column=0, columnspan=3, sticky="w", pady=(8, 0))
         self.use_dim_env_var = tk.BooleanVar(value=True)
-        tk.Checkbutton(
-            flags,
-            text="Use managed Py3.9 DIM env (conda)",
-            variable=self.use_dim_env_var,
-        ).pack(side=tk.LEFT, padx=(0, 12))
         self.skip_dim_var = tk.BooleanVar(value=False)
         self.overwrite_var = tk.BooleanVar(value=False)
         self.dim_multi_camera_var = tk.BooleanVar(value=False)
         self.skip_geom_verify_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(flags, text="跳过 deep-image-matching (--skip_dim)", variable=self.skip_dim_var).pack(
-            side=tk.LEFT, padx=(0, 12)
-        )
-        tk.Checkbutton(flags, text="DIM 覆盖已有输出 (--overwrite)", variable=self.overwrite_var).pack(side=tk.LEFT)
-        tk.Checkbutton(flags, text="DIM 多相机 (--dim_multi_camera)", variable=self.dim_multi_camera_var).pack(
-            side=tk.LEFT, padx=(12, 0)
-        )
-        tk.Checkbutton(flags, text="跳过 geom verify", variable=self.skip_geom_verify_var).pack(side=tk.LEFT, padx=(12, 0))
 
-        # Run button
-        btn = tk.Button(frame, text="开始运行", command=self.run_pipeline_thread, width=20)
-        btn.grid(row=13, column=0, columnspan=3, pady=(12, 0))
-        self.run_btn = btn
+        project = ttk.LabelFrame(parent, text="项目", style="Section.TLabelframe", padding=10)
+        project.pack(fill=tk.X, pady=(0, 10))
+        self._grid_labeled_entry(project, "工作目录 (必须含 images/):", self.work_dir_var, row=0, browse="dir")
+        self._grid_labeled_entry(project, "COLMAP 可执行文件:", self.colmap_var, row=1, browse="file")
+        self._grid_labeled_entry(project, "Dense 输出目录(可空):", self.dense_dir_var, row=2, browse="dir")
 
-    def _add_labeled_entry(
-        self, parent: tk.Frame, label: str, var: tk.StringVar, row: int, browse: str | None = None
+        options = ttk.LabelFrame(parent, text="运行模式与匹配", style="Section.TLabelframe", padding=10)
+        options.pack(fill=tk.X, pady=(0, 10))
+
+        self.mode_combo = self._grid_labeled_combo(
+            options,
+            "模式:",
+            self.mode_var,
+            values=(MODE_FULL, MODE_DIM_ONLY, MODE_DENSE_ONLY),
+            row=0,
+        )
+        self.pipeline_combo = self._grid_labeled_combo(
+            options,
+            "DIM pipeline:",
+            self.pipeline_var,
+            values=PIPELINE_PRESETS,
+            row=1,
+            editable=True,
+        )
+        self.dim_quality_combo = self._grid_labeled_combo(
+            options, "DIM quality:", self.dim_quality_var, values=DIM_QUALITY_OPTIONS, row=2
+        )
+        self.dim_camera_model_combo = self._grid_labeled_combo(
+            options, "DIM camera model:", self.dim_camera_model_var, values=CAMERA_MODEL_OPTIONS, row=3
+        )
+
+        gpu = ttk.LabelFrame(parent, text="GPU（可空）", style="Section.TLabelframe", padding=10)
+        gpu.pack(fill=tk.X, pady=(0, 10))
+        self.dim_gpu_entry = self._grid_labeled_entry(gpu, "DIM GPU index:", self.gpu_var, row=0)
+        self.pm_gpu_entry = self._grid_labeled_entry(gpu, "PatchMatch GPU index:", self.pm_gpu_var, row=1)
+
+        flags = ttk.LabelFrame(parent, text="开关", style="Section.TLabelframe", padding=10)
+        flags.pack(fill=tk.X, pady=(0, 10))
+        self.use_dim_env_check = ttk.Checkbutton(
+            flags, text="Use managed Py3.9 DIM env (conda)", variable=self.use_dim_env_var
+        )
+        self.use_dim_env_check.grid(
+            row=0, column=0, sticky="w", padx=(0, 18), pady=2
+        )
+        self.overwrite_check = ttk.Checkbutton(flags, text="覆盖输出 (--overwrite)", variable=self.overwrite_var)
+        self.overwrite_check.grid(
+            row=0, column=1, sticky="w", padx=(0, 18), pady=2
+        )
+        self.skip_dim_check = ttk.Checkbutton(flags, text="跳过 DIM (--skip_dim)", variable=self.skip_dim_var)
+        self.skip_dim_check.grid(
+            row=1, column=0, sticky="w", padx=(0, 18), pady=2
+        )
+        self.multi_cam_check = ttk.Checkbutton(flags, text="DIM 多相机", variable=self.dim_multi_camera_var)
+        self.multi_cam_check.grid(
+            row=1, column=1, sticky="w", padx=(0, 18), pady=2
+        )
+        self.skip_geom_check = ttk.Checkbutton(flags, text="跳过 geom verify", variable=self.skip_geom_verify_var)
+        self.skip_geom_check.grid(
+            row=2, column=0, sticky="w", padx=(0, 18), pady=2
+        )
+
+        actions = ttk.Frame(parent)
+        actions.pack(fill=tk.X, pady=(0, 6))
+        self.run_btn = ttk.Button(actions, text="开始运行", command=self.run_pipeline_thread)
+        self.run_btn.pack(side=tk.LEFT)
+        ttk.Label(
+            actions,
+            text="提示：第一次使用 managed env 会安装依赖/下载权重，耗时较长。",
+        ).pack(side=tk.LEFT, padx=12)
+
+        self.mode_var.trace_add("write", lambda *_: self._sync_mode_ui())
+        self._sync_mode_ui()
+
+    def _build_test_tab(self, parent: ttk.Frame) -> None:
+        self.test_pipelines_var = tk.StringVar(value="all")
+        self.test_max_images_var = tk.StringVar(value="")
+        self.test_quality_var = tk.StringVar(value="low")
+
+        top = ttk.LabelFrame(parent, text="DIM pipelines 测试", style="Section.TLabelframe", padding=10)
+        top.pack(fill=tk.X, pady=(0, 10))
+
+        self._grid_labeled_entry(top, "pipelines (all/逗号分隔):", self.test_pipelines_var, row=0)
+        self._grid_labeled_entry(top, "限制图片数(可空，使用全部):", self.test_max_images_var, row=1)
+        self._grid_labeled_combo(top, "DIM quality:", self.test_quality_var, values=DIM_QUALITY_OPTIONS, row=2)
+
+        btns = ttk.Frame(top)
+        btns.grid(row=3, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        self.preset_pipelines_btn = ttk.Button(btns, text="填入推荐列表", command=self.fill_recommended_pipelines)
+        self.preset_pipelines_btn.pack(side=tk.LEFT, padx=(0, 8))
+        self.list_pipelines_btn = ttk.Button(btns, text="列出 DIM pipelines", command=self.list_pipelines_thread)
+        self.list_pipelines_btn.pack(side=tk.LEFT, padx=(0, 8))
+        self.probe_pipelines_btn = ttk.Button(btns, text="Probe pipelines", command=self.probe_pipelines_thread)
+        self.probe_pipelines_btn.pack(side=tk.LEFT, padx=(0, 8))
+        self.test_pipelines_btn = ttk.Button(btns, text="跑 smoke test", command=self.test_pipelines_thread)
+        self.test_pipelines_btn.pack(side=tk.LEFT)
+
+        hint = ttk.Label(
+            parent,
+            text=(
+                "如果你的数据量不大，可以直接点 “跑测试”(全量) 来比较不同 pipeline。"
+                "需要加速时再用“限制图片数”。"
+            ),
+            wraplength=860,
+        )
+        hint.pack(fill=tk.X)
+
+    def _grid_labeled_entry(
+        self,
+        parent: ttk.Frame,
+        label: str,
+        var: tk.StringVar,
+        row: int,
+        *,
+        browse: str | None = None,
     ) -> None:
-        tk.Label(parent, text=label, anchor="w").grid(row=row, column=0, sticky="w", pady=2)
-        entry = tk.Entry(parent, textvariable=var, width=60)
-        entry.grid(row=row, column=1, sticky="we", pady=2)
+        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=4)
+        entry = ttk.Entry(parent, textvariable=var)
+        entry.grid(row=row, column=1, sticky="we", pady=4, padx=(8, 8))
         parent.grid_columnconfigure(1, weight=1)
         if browse:
             if browse == "dir":
@@ -127,13 +231,41 @@ class PipelineGUI:
             else:
                 cmd = lambda: self._choose_file(var)
                 text = "选择..."
-            tk.Button(parent, text=text, command=cmd).grid(row=row, column=2, padx=4, pady=2)
+            ttk.Button(parent, text=text, command=cmd, width=10).grid(row=row, column=2, pady=4)
+        return entry
+
+    def _grid_labeled_combo(
+        self,
+        parent: ttk.Frame,
+        label: str,
+        var: tk.StringVar,
+        *,
+        values: tuple[str, ...],
+        row: int,
+        editable: bool = False,
+    ) -> ttk.Combobox:
+        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=4)
+        state = "normal" if editable else "readonly"
+        combo = ttk.Combobox(parent, textvariable=var, values=values, state=state)
+        combo.grid(row=row, column=1, sticky="we", pady=4, padx=(8, 8))
+        parent.grid_columnconfigure(1, weight=1)
+        ttk.Button(parent, text="?", width=3, command=lambda: self._show_help_for(label)).grid(
+            row=row, column=2, pady=4
+        )
+        return combo
 
     def _build_log(self) -> None:
-        tk.Label(self.root, text="日志输出：").pack(anchor="w", padx=12, pady=(4, 0))
-        log_box = ScrolledText(self.root, height=22, wrap="word", state="disabled")
-        log_box.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 12))
+        frame = ttk.LabelFrame(self.outer, text="日志", style="Section.TLabelframe", padding=10)
+        frame.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(frame, text="日志输出：").pack(anchor="w")
+        log_box = ScrolledText(frame, height=18, wrap="word", state="disabled")
+        log_box.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
         self.log_box = log_box
+
+    def clear_log(self) -> None:
+        self.log_box.configure(state="normal")
+        self.log_box.delete("1.0", tk.END)
+        self.log_box.configure(state="disabled")
 
     def _choose_dir(self, var: tk.StringVar) -> None:
         path = filedialog.askdirectory(title="选择目录")
@@ -150,12 +282,89 @@ class PipelineGUI:
         return int(value) if value else None
 
     def _set_busy(self, busy: bool) -> None:
-        state = "disabled" if busy else "normal"
-        self.run_btn.configure(state=state)
-        self.preset_pipelines_btn.configure(state=state)
-        self.list_pipelines_btn.configure(state=state)
-        self.probe_pipelines_btn.configure(state=state)
-        self.test_pipelines_btn.configure(state=state)
+        if busy:
+            for w in (
+                self.run_btn,
+                self.preset_pipelines_btn,
+                self.list_pipelines_btn,
+                self.probe_pipelines_btn,
+                self.test_pipelines_btn,
+                self.mode_combo,
+                self.pipeline_combo,
+                self.dim_quality_combo,
+                self.dim_camera_model_combo,
+                self.dim_gpu_entry,
+                self.pm_gpu_entry,
+                self.use_dim_env_check,
+                self.overwrite_check,
+                self.skip_dim_check,
+                self.multi_cam_check,
+                self.skip_geom_check,
+            ):
+                w.configure(state="disabled")
+            return
+
+        # Restore interactive state.
+        self.run_btn.configure(state="normal")
+        self.preset_pipelines_btn.configure(state="normal")
+        self.list_pipelines_btn.configure(state="normal")
+        self.probe_pipelines_btn.configure(state="normal")
+        self.test_pipelines_btn.configure(state="normal")
+
+        self.mode_combo.configure(state="readonly")
+        self.pipeline_combo.configure(state="normal")
+        self.dim_quality_combo.configure(state="readonly")
+        self.dim_camera_model_combo.configure(state="readonly")
+        self.dim_gpu_entry.configure(state="normal")
+        self.pm_gpu_entry.configure(state="normal")
+        self.use_dim_env_check.configure(state="normal")
+        self.overwrite_check.configure(state="normal")
+        self.skip_dim_check.configure(state="normal")
+        self.multi_cam_check.configure(state="normal")
+        self.skip_geom_check.configure(state="normal")
+        self._sync_mode_ui()
+
+    def _sync_mode_ui(self) -> None:
+        mode = self.mode_var.get().strip()
+        if mode == MODE_DENSE_ONLY:
+            self.skip_dim_var.set(True)
+            self.skip_dim_check.configure(state="disabled")
+            self.pipeline_combo.configure(state="disabled")
+            self.dim_quality_combo.configure(state="disabled")
+            self.dim_camera_model_combo.configure(state="disabled")
+            self.multi_cam_check.configure(state="disabled")
+            self.skip_geom_check.configure(state="disabled")
+            self.pm_gpu_entry.configure(state="normal")
+        elif mode == MODE_DIM_ONLY:
+            self.skip_dim_var.set(False)
+            self.skip_dim_check.configure(state="disabled")
+            self.pipeline_combo.configure(state="normal")
+            self.dim_quality_combo.configure(state="readonly")
+            self.dim_camera_model_combo.configure(state="readonly")
+            self.multi_cam_check.configure(state="normal")
+            self.skip_geom_check.configure(state="normal")
+            self.pm_gpu_entry.configure(state="disabled")
+        else:
+            self.skip_dim_check.configure(state="normal")
+            self.pipeline_combo.configure(state="normal")
+            self.dim_quality_combo.configure(state="readonly")
+            self.dim_camera_model_combo.configure(state="readonly")
+            self.multi_cam_check.configure(state="normal")
+            self.skip_geom_check.configure(state="normal")
+            self.pm_gpu_entry.configure(state="normal")
+
+    def _show_help_for(self, label: str) -> None:
+        txt = {
+            "模式:": (
+                f"{MODE_FULL}: 先跑 DIM 导出 + COLMAP mapper 得到 sparse，再跑 dense。\n"
+                f"{MODE_DIM_ONLY}: 只生成 sparse（适合先看能否稀疏重建）。\n"
+                f"{MODE_DENSE_ONLY}: 只跑 dense（需要 work_dir 下已有 sparse/）。"
+            ),
+            "DIM pipeline:": "选择匹配模型组合；常用推荐：aliked+lightglue / sift+lightglue / loftr。",
+            "DIM quality:": "分辨率预设；high/highest 更稳但更慢，lowest 用于快速测试。",
+            "DIM camera model:": "写入 COLMAP 数据库的相机模型；单相机 UAV 通常 simple-radial 即可。",
+        }.get(label, "暂无帮助信息。")
+        messagebox.showinfo("帮助", txt)
 
     def _log(self, msg: str) -> None:
         self.log_queue.put(msg)
@@ -175,9 +384,14 @@ class PipelineGUI:
     def run_pipeline_thread(self) -> None:
         if self.running:
             return
+
+        work_dir = self.work_dir_var.get().strip()
+        if not work_dir:
+            messagebox.showerror("参数错误", "请先选择工作目录（包含 images/）。")
+            return
         try:
             cfg = PipelineConfig(
-                work_dir=self.work_dir_var.get(),
+                work_dir=work_dir,
                 pipeline=self.pipeline_var.get().strip() or "superpoint+lightglue",
                 colmap_bin=self.colmap_var.get().strip() or "colmap",
                 dense_dir=self.dense_dir_var.get().strip() or None,
@@ -197,12 +411,20 @@ class PipelineGUI:
 
         self.running = True
         self._set_busy(True)
-        self._log("===== 开始运行 =====")
+        mode = self.mode_var.get().strip()
+        self._log(f"===== 开始运行 ({mode}) =====")
 
         def worker() -> None:
             try:
-                fused = run_pipeline(cfg, log=self._log)
-                self._log(f"[DONE] Dense 点云输出: {fused}")
+                if mode == MODE_DIM_ONLY:
+                    run_dim_step(cfg, log=self._log)
+                    self._log("[DONE] DIM + sparse 已完成（查看 work_dir 下 sparse/ 与 dim_outputs/）")
+                elif mode == MODE_DENSE_ONLY:
+                    fused = run_colmap_mvs(cfg, log=self._log)
+                    self._log(f"[DONE] Dense 点云输出: {fused}")
+                else:
+                    fused = run_pipeline(cfg, log=self._log)
+                    self._log(f"[DONE] Dense 点云输出: {fused}")
             except Exception as e:  # noqa: BLE001
                 self._log(f"[ERROR] {e}")
             finally:
@@ -221,13 +443,14 @@ class PipelineGUI:
         cmd = [sys.executable, "-m", "uav_pipeline.dim_wrapper", *argv]
         run_cmd(cmd, log=self._log, env=env_vars)
 
-    def _get_test_params(self) -> tuple[str, int, str]:
+    def _get_test_params(self) -> tuple[str, int | None, str]:
         pipelines = self.test_pipelines_var.get().strip() or "all"
         quality = self.test_quality_var.get().strip() or "lowest"
         try:
-            max_images = int((self.test_max_images_var.get() or "").strip() or "2")
+            raw = (self.test_max_images_var.get() or "").strip()
+            max_images = int(raw) if raw else None
         except ValueError as e:
-            raise ValueError("smoke test 的 N 必须是整数") from e
+            raise ValueError("限制图片数必须是整数或留空") from e
         return pipelines, max_images, quality
 
     def fill_recommended_pipelines(self) -> None:
@@ -235,9 +458,9 @@ class PipelineGUI:
         Fill in a curated list of pipelines that are commonly useful for UAV SfM.
         You can still edit the text field afterwards.
         """
-        self.test_pipelines_var.set(
-            "sift+kornia_matcher,sift+lightglue,aliked+lightglue,superpoint+lightglue,loftr,se2loftr,roma"
-        )
+        self.test_pipelines_var.set(TEST_PIPELINE_RECOMMENDED)
+        self.test_max_images_var.set("")
+        self.test_quality_var.set("low")
 
     def list_pipelines_thread(self) -> None:
         if self.running:
@@ -325,7 +548,7 @@ class PipelineGUI:
 
         self.running = True
         self._set_busy(True)
-        self._log("===== 跑 DIM pipelines smoke test =====")
+        self._log("===== 跑 DIM pipelines 测试 =====")
 
         def worker() -> None:
             try:
@@ -349,12 +572,12 @@ class PipelineGUI:
                         pipelines,
                         "--quality",
                         quality,
-                        "--max_images",
-                        str(max_images),
                         "--camera_model",
                         self.dim_camera_model_var.get().strip() or "simple-radial",
                         "--print_summary",
                     ]
+                    if max_images is not None:
+                        argv += ["--max_images", str(max_images)]
                     if self.overwrite_var.get():
                         argv.append("--overwrite")
                     if self.dim_multi_camera_var.get():
