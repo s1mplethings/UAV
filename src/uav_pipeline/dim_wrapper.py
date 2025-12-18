@@ -207,19 +207,13 @@ def run_dim(
     # - else: write DIM artifacts to a unique subfolder and only write database.db
     #   to the stable folder.
     output_dir.mkdir(parents=True, exist_ok=True)
-    dim_out_dir = output_dir
+    # Always run DIM into a non-existing subfolder; DIM's Config exits if `outs` exists.
     if overwrite:
-        # Full reset of DIM artifacts + exported database in this folder.
-        for child in list(output_dir.iterdir()):
-            if child.is_dir():
-                shutil.rmtree(child)
-            else:
-                try:
-                    child.unlink()
-                except FileNotFoundError:
-                    pass
+        dim_out_dir = output_dir / "run_latest"
+        if dim_out_dir.exists():
+            shutil.rmtree(dim_out_dir)
+        # Optional cleanup: keep old runs only when overwrite is off.
     else:
-        # Keep old artifacts; put new DIM outputs into a run-specific folder.
         dim_out_dir = _pick_nonexistent_run_dir(output_dir)
 
     images_dir = dir_path / "images"
