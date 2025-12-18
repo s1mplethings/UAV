@@ -15,7 +15,6 @@ import os
 import shutil
 from pathlib import Path
 
-from deep_image_matching.config import confs as DIM_PIPELINES
 import yaml
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp"}
@@ -60,7 +59,12 @@ def export_matches_to_colmap_db(
 
 
 def list_pipelines() -> list[str]:
-    return sorted(set(DIM_PIPELINES.keys()) | set(PIPELINE_ALIASES.keys()))
+    try:
+        from deep_image_matching.config import confs as dim_confs
+        builtins = set(dim_confs.keys())
+    except Exception:
+        builtins = set()
+    return sorted(builtins | set(PIPELINE_ALIASES.keys()))
 
 
 def _resolve_pipeline(pipeline: str, temp_root: Path) -> tuple[str, Path | None]:
@@ -68,10 +72,10 @@ def _resolve_pipeline(pipeline: str, temp_root: Path) -> tuple[str, Path | None]
     Resolve a user-facing pipeline name to a DIM pipeline + optional YAML override config.
     Returns (base_pipeline, config_file_path_or_None).
     """
-    if pipeline in DIM_PIPELINES:
-        return pipeline, None
+    # Avoid importing deep_image_matching at module import time.
+    # For built-in pipelines we don't validate here; DIM's Config will validate later.
     if pipeline not in PIPELINE_ALIASES:
-        raise ValueError(f"Unknown pipeline: {pipeline}")
+        return pipeline, None
 
     alias = PIPELINE_ALIASES[pipeline]
     base = alias["base_pipeline"]
@@ -181,6 +185,21 @@ def run_dim(
     tmp = temp_root or (dir_path / "_tmp_dim_wrapper")
     base_pipeline, config_file = _resolve_pipeline(pipeline, tmp / "_pipeline_cfg")
     dir_path = _prepare_subset_dir(dir_path=dir_path, temp_root=tmp, max_images=max_images)
+
+    images_dir = dir_path / "images"
+    if not images_dir.exists():
+        raise FileNotFoundError(f"{dir_path} 下找不到 images 目录")
+    imgs = _iter_images(images_dir)
+    if not imgs:
+        sub_with_imgs: list[Path] = []
+        for p in images_dir.iterdir():
+            if p.is_dir() and _iter_images(p):
+                sub_with_imgs.append(p)
+        hint = ""
+        if sub_with_imgs:
+            hint = f"（发现子目录含图片：{sub_with_imgs[0].name}，请把图片移动到 images/ 下，或把该子目录内容链接/复制到 images/）"
+        raise FileNotFoundError(f"{images_dir} 里没有检测到图片文件{hint}")
+
     from deep_image_matching.config import Config
     from deep_image_matching.image_matching import ImageMatcher
 
@@ -337,6 +356,7 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     results: dict[str, dict] = {}
+    had_failure = False
     for p in pipelines:
         safe_name = p.replace("/", "_").replace("\\", "_").replace(":", "_")
         output_dir = base_output_dir if not multi_run else pick_output_dir_multi(base_output_dir, safe_name, overwrite=args.overwrite)
@@ -361,11 +381,16 @@ def main(argv: list[str] | None = None) -> None:
         except Exception as e:  # noqa: BLE001
             print(f"[FAIL] {p}: {e}")
             results[p] = {"ok": False, "error": str(e)}
+            had_failure = True
 
     if len(pipelines) > 1:
         report_path = base_output_dir / "report.json"
         report_path.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"REPORT={report_path}")
+
+    # If this wrapper is used as a single-run step in the main pipeline, fail fast.
+    if len(pipelines) == 1 and had_failure and not args.probe_pipelines:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

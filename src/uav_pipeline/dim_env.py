@@ -39,6 +39,7 @@ class DeepImageMatchingEnv:
         torch_cuda: str = "cu121",
         torch_index_url: str = "https://download.pytorch.org/whl/cu121",
         install_cuda_torch: bool = True,
+        numpy_spec: str = "numpy<2",
     ):
         # Compatible with PyInstaller: sys._MEIPASS points to the unpacked temp dir.
         if hasattr(sys, "_MEIPASS"):
@@ -62,6 +63,7 @@ class DeepImageMatchingEnv:
         self.torch_cuda = torch_cuda
         self.torch_index_url = torch_index_url
         self.install_cuda_torch = install_cuda_torch
+        self.numpy_spec = numpy_spec
 
     def _find_conda(self) -> str:
         conda = shutil.which("conda")
@@ -137,6 +139,11 @@ class DeepImageMatchingEnv:
 
         # 4) Install/repair DIM deps in the env.
         self._run([str(self.python_exe), "-m", "pip", "install", "--upgrade", "pip"])
+
+        # Numpy 2.x is not compatible with some PyTorch wheels (especially older versions).
+        # Pin numpy to <2 to avoid runtime warnings/crashes when importing torch.
+        if self.numpy_spec:
+            self._run([str(self.python_exe), "-m", "pip", "install", self.numpy_spec])
 
         # Prefer a CUDA build of torch/torchvision if requested.
         if self.install_cuda_torch:
@@ -270,6 +277,19 @@ class DeepImageMatchingEnv:
         images_dir = dir_path / "images"
         if not images_dir.exists():
             raise FileNotFoundError(f"{dir_path} 下找不到 images 目录")
+        # Validate that the images folder contains actual images (not only subfolders).
+        exts = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp"}
+        img_files = [p for p in images_dir.iterdir() if p.is_file() and p.suffix.lower() in exts]
+        if not img_files:
+            sub_with_imgs: list[Path] = []
+            for p in images_dir.iterdir():
+                if p.is_dir():
+                    if any(q.is_file() and q.suffix.lower() in exts for q in p.iterdir()):
+                        sub_with_imgs.append(p)
+            hint = ""
+            if sub_with_imgs:
+                hint = f"（发现子目录含图片：{sub_with_imgs[0].name}，请把图片移动到 images/ 下，或把该子目录内容链接/复制到 images/）"
+            raise FileNotFoundError(f"{images_dir} 里没有检测到图片文件{hint}")
 
         dim_output = dir_path / "dim_outputs"
 
