@@ -55,6 +55,11 @@ Notes
 - deep-image-matching is intentionally *not* a project dependency. The pipeline will auto-create a Python 3.9 conda env (`py39_dim_env`) beside the executable and install DIM there. Make sure `conda` is on PATH; disable the managed env with `--no_dim_env` or in the GUI checkbox if you want to run DIM in the current Python environment.
 - DIM→COLMAP 的稀疏重建质量通常取决于两点：是否用 `single_camera`（默认开启，适合大多数单相机 UAV 数据）以及是否跑 `colmap geometric_verification`（默认开启）。如果你的数据确实是多相机/变焦，可以加 `--dim_multi_camera`。
 
+Troubleshooting
+---------------
+- 报错 `Numpy is not available` / 提示 NumPy 2.x 不兼容 torch：这是 managed DIM env 里 numpy 版本过新导致。可以在 env 内强制降级：
+  - Windows 示例：`<work_dir 或仓库>/src/uav_pipeline/py39_dim_env/python.exe -m pip install --upgrade --force-reinstall "numpy<2"`
+
 Matching pipelines 选型（DIM pipeline 名称对照）
 ---------------------------------------------
 1) 稀疏关键点匹配（传统 SfM，通常最稳）

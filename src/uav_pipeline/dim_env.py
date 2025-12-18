@@ -104,8 +104,8 @@ class DeepImageMatchingEnv:
         elif self._alt_python.exists():
             env_python = self._alt_python
 
-        # 2) If env exists and DIM imports, we're done.
-        if env_python is not None and self._can_import_dim(env_python):
+        # 2) If env exists and runtime is healthy, we're done.
+        if env_python is not None and self._runtime_ok(env_python):
             self.python_exe = env_python
             return self.python_exe
 
@@ -143,7 +143,7 @@ class DeepImageMatchingEnv:
         # Numpy 2.x is not compatible with some PyTorch wheels (especially older versions).
         # Pin numpy to <2 to avoid runtime warnings/crashes when importing torch.
         if self.numpy_spec:
-            self._run([str(self.python_exe), "-m", "pip", "install", self.numpy_spec])
+            self._run([str(self.python_exe), "-m", "pip", "install", "--upgrade", "--force-reinstall", self.numpy_spec])
 
         # Prefer a CUDA build of torch/torchvision if requested.
         if self.install_cuda_torch:
@@ -169,11 +169,26 @@ class DeepImageMatchingEnv:
 
         self._run([str(self.python_exe), "-m", "pip", "install", "deep-image-matching"])
 
+        # Final sanity check to catch "Numpy is not available" at runtime.
+        if not self._runtime_ok(self.python_exe):
+            raise RuntimeError(
+                "DIM 环境创建完成，但 numpy/torch 在运行时不可用（常见原因：numpy 2.x 与 torch 不兼容）。\n"
+                f"请在该环境里执行：{self.python_exe} -m pip install --upgrade --force-reinstall \"{self.numpy_spec}\""
+            )
+
         return self.python_exe
 
-    def _can_import_dim(self, python_exe: Path) -> bool:
+    def _runtime_ok(self, python_exe: Path) -> bool:
         try:
-            self._run([str(python_exe), "-c", "import deep_image_matching"], check=True)
+            # Validate numpy + torch interoperability (torch.from_numpy requires numpy C-API).
+            script = (
+                "import numpy as np\n"
+                "import torch\n"
+                "import deep_image_matching\n"
+                "torch.from_numpy(np.zeros((1,), dtype=np.float32))\n"
+                "print('OK', np.__version__, torch.__version__)\n"
+            )
+            self._run([str(python_exe), "-c", script], check=True)
             return True
         except subprocess.CalledProcessError:
             return False
