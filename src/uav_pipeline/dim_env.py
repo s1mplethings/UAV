@@ -169,6 +169,10 @@ class DeepImageMatchingEnv:
 
         self._run([str(self.python_exe), "-m", "pip", "install", "deep-image-matching"])
 
+        # Some dependencies may pull in NumPy 2.x; enforce our pin again at the end.
+        if self.numpy_spec:
+            self._run([str(self.python_exe), "-m", "pip", "install", "--upgrade", "--force-reinstall", self.numpy_spec])
+
         # Final sanity check to catch "Numpy is not available" at runtime.
         if not self._runtime_ok(self.python_exe):
             raise RuntimeError(
