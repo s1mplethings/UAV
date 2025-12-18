@@ -43,6 +43,71 @@ MODE_DIM_ONLY = "仅 DIM：特征/匹配 → Sparse"
 MODE_DENSE_ONLY = "仅 Dense：使用已有 Sparse"
 
 
+class ScrollableFrame(ttk.Frame):
+    """
+    A vertically scrollable frame (works well for long forms).
+
+    Usage:
+        sf = ScrollableFrame(parent)
+        sf.pack(fill="both", expand=True)
+        # Put widgets into sf.content
+    """
+
+    def __init__(self, parent: tk.Misc, *args, **kwargs) -> None:
+        super().__init__(parent, *args, **kwargs)
+
+        self.canvas = tk.Canvas(self, highlightthickness=0)
+        self.vscroll = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=self.vscroll.set)
+
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.vscroll.pack(side="right", fill="y")
+
+        self.content = ttk.Frame(self.canvas)
+        self._window_id = self.canvas.create_window((0, 0), window=self.content, anchor="nw")
+
+        self.content.bind("<Configure>", self._on_frame_configure)
+        self.canvas.bind("<Configure>", self._on_canvas_configure)
+
+        # Mouse wheel scrolling (Windows/macOS) + Linux button scroll.
+        self.canvas.bind("<Enter>", lambda _e: self._bind_mousewheel())
+        self.canvas.bind("<Leave>", lambda _e: self._unbind_mousewheel())
+
+    def _on_frame_configure(self, _event: tk.Event) -> None:
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+    def _on_canvas_configure(self, event: tk.Event) -> None:
+        self.canvas.itemconfigure(self._window_id, width=event.width)
+
+    def _on_mousewheel(self, event: tk.Event) -> None:
+        # Windows: event.delta is multiples of 120. macOS can be smaller.
+        delta = int(getattr(event, "delta", 0))
+        if delta:
+            self.canvas.yview_scroll(int(-1 * (delta / 120)), "units")
+
+    def _on_linux_scroll_up(self, _event: tk.Event) -> None:
+        self.canvas.yview_scroll(-1, "units")
+
+    def _on_linux_scroll_down(self, _event: tk.Event) -> None:
+        self.canvas.yview_scroll(1, "units")
+
+    def _bind_mousewheel(self) -> None:
+        # Bind to toplevel so wheel works even if focus is on an Entry/Combobox.
+        toplevel = self.winfo_toplevel()
+        toplevel.bind_all("<MouseWheel>", self._on_mousewheel, add="+")
+        toplevel.bind_all("<Button-4>", self._on_linux_scroll_up, add="+")
+        toplevel.bind_all("<Button-5>", self._on_linux_scroll_down, add="+")
+
+    def _unbind_mousewheel(self) -> None:
+        toplevel = self.winfo_toplevel()
+        try:
+            toplevel.unbind_all("<MouseWheel>")
+            toplevel.unbind_all("<Button-4>")
+            toplevel.unbind_all("<Button-5>")
+        except Exception:
+            pass
+
+
 class PipelineGUI:
     def __init__(self, root: tk.Tk):
         self.root = root
@@ -79,13 +144,13 @@ class PipelineGUI:
         self.notebook = ttk.Notebook(outer)
         self.notebook.pack(fill=tk.BOTH, expand=True, pady=(10, 10))
 
-        self.run_tab = ttk.Frame(self.notebook, padding=10)
-        self.test_tab = ttk.Frame(self.notebook, padding=10)
+        self.run_tab = ScrollableFrame(self.notebook)
+        self.test_tab = ScrollableFrame(self.notebook)
         self.notebook.add(self.run_tab, text="运行")
         self.notebook.add(self.test_tab, text="测试")
 
-        self._build_run_tab(self.run_tab)
-        self._build_test_tab(self.test_tab)
+        self._build_run_tab(self.run_tab.content)
+        self._build_test_tab(self.test_tab.content)
 
     def _build_run_tab(self, parent: ttk.Frame) -> None:
         # Vars
