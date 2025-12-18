@@ -83,6 +83,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="smoke test 输出目录（默认 <dir>/dim_tests）。",
     )
     parser.add_argument(
+        "--benchmark",
+        action="store_true",
+        help="在 test_dim_pipelines 时记录耗时/内存/GPU，并输出 benchmark.csv/json。",
+    )
+    parser.add_argument(
+        "--benchmark_interval",
+        type=float,
+        default=0.2,
+        help="benchmark RSS 采样间隔秒数（默认 0.2）。",
+    )
+    parser.add_argument(
         "--no_dim_env",
         action="store_true",
         help="Disable the managed Python 3.9 deep-image-matching environment; run DIM in the current Python env.",
@@ -183,6 +194,9 @@ def main(argv: list[str] | None = None) -> None:
                 args.dim_camera_model,
                 "--print_summary",
             ]
+            if args.benchmark:
+                cmd.append("--benchmark")
+                cmd += ["--benchmark_interval", str(args.benchmark_interval)]
             if args.test_max_images is not None:
                 cmd += ["--max_images", str(args.test_max_images)]
             if args.test_output_dir:
@@ -199,6 +213,8 @@ def main(argv: list[str] | None = None) -> None:
                 output_dir=args.test_output_dir,
                 max_images=args.test_max_images,
                 quality=args.test_quality,
+                benchmark=args.benchmark,
+                benchmark_interval=args.benchmark_interval,
                 overwrite=args.overwrite,
                 single_camera=not args.dim_multi_camera,
                 camera_model=args.dim_camera_model,

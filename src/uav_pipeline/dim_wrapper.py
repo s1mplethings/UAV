@@ -10,10 +10,15 @@ script finishes (our pipeline does it in Python).
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import shutil
+import threading
+import time
+from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -165,6 +170,116 @@ def summarize_h5(feature_path: Path, match_path: Path) -> dict:
     return summary
 
 
+def _get_rss_bytes() -> int | None:
+    """
+    Best-effort process RSS (resident set size) in bytes.
+    Returns None if not supported.
+    """
+    # psutil is optional; prefer it if present.
+    try:
+        import psutil  # type: ignore
+
+        return int(psutil.Process(os.getpid()).memory_info().rss)
+    except Exception:
+        pass
+
+    # Windows fallback via ctypes.
+    if os.name == "nt":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class PROCESS_MEMORY_COUNTERS(ctypes.Structure):
+                _fields_ = [
+                    ("cb", wintypes.DWORD),
+                    ("PageFaultCount", wintypes.DWORD),
+                    ("PeakWorkingSetSize", ctypes.c_size_t),
+                    ("WorkingSetSize", ctypes.c_size_t),
+                    ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                    ("PagefileUsage", ctypes.c_size_t),
+                    ("PeakPagefileUsage", ctypes.c_size_t),
+                ]
+
+            GetCurrentProcess = ctypes.windll.kernel32.GetCurrentProcess
+            GetProcessMemoryInfo = ctypes.windll.psapi.GetProcessMemoryInfo
+            counters = PROCESS_MEMORY_COUNTERS()
+            counters.cb = ctypes.sizeof(counters)
+            ok = GetProcessMemoryInfo(GetCurrentProcess(), ctypes.byref(counters), counters.cb)
+            if ok:
+                return int(counters.WorkingSetSize)
+        except Exception:
+            return None
+
+    return None
+
+
+@dataclass
+class BenchmarkMetrics:
+    wall_time_s: float
+    cpu_time_s: float
+    rss_peak_mb: float | None = None
+    rss_avg_mb: float | None = None
+    cuda_peak_alloc_mb: float | None = None
+    cuda_peak_reserved_mb: float | None = None
+
+
+class _RssSampler:
+    def __init__(self, interval_s: float) -> None:
+        self.interval_s = interval_s
+        self._stop = threading.Event()
+        self.samples: list[int] = []
+        self.thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        def _loop() -> None:
+            while not self._stop.is_set():
+                rss = _get_rss_bytes()
+                if rss is not None:
+                    self.samples.append(int(rss))
+                time.sleep(self.interval_s)
+
+        self.thread = threading.Thread(target=_loop, daemon=True)
+        self.thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self.thread is not None:
+            self.thread.join(timeout=2.0)
+
+    def summary_mb(self) -> tuple[float | None, float | None]:
+        if not self.samples:
+            return None, None
+        peak = max(self.samples) / (1024 * 1024)
+        avg = (sum(self.samples) / len(self.samples)) / (1024 * 1024)
+        return peak, avg
+
+
+def _cuda_peak_mb() -> tuple[float | None, float | None]:
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return None, None
+        alloc = float(torch.cuda.max_memory_allocated() / (1024 * 1024))
+        reserved = float(torch.cuda.max_memory_reserved() / (1024 * 1024))
+        return alloc, reserved
+    except Exception:
+        return None, None
+
+
+def _reset_cuda_peaks() -> None:
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
+    except Exception:
+        pass
+
+
 def _pick_nonexistent_run_dir(base: Path, prefix: str = "run") -> Path:
     """
     Pick a non-existing run directory under `base`.
@@ -310,6 +425,17 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Print a JSON summary (keypoints/matches counts) after each run.",
     )
+    parser.add_argument(
+        "--benchmark",
+        action="store_true",
+        help="Record time/RAM/GPU usage for each run and write benchmark.{json,csv} report.",
+    )
+    parser.add_argument(
+        "--benchmark_interval",
+        type=float,
+        default=0.2,
+        help="Sampling interval in seconds for RSS monitoring (default: 0.2).",
+    )
     parser.add_argument("--overwrite", action="store_true", help="Force overwrite outputs if they exist.")
     args = parser.parse_args(argv)
 
@@ -388,27 +514,79 @@ def main(argv: list[str] | None = None) -> None:
 
     results: dict[str, dict] = {}
     had_failure = False
+    bench_rows: list[dict[str, Any]] = []
     for p in pipelines:
         safe_name = p.replace("/", "_").replace("\\", "_").replace(":", "_")
         output_dir = base_output_dir if not multi_run else pick_output_dir_multi(base_output_dir, safe_name, overwrite=args.overwrite)
         try:
-            feat, matches, db = run_dim(
-                dir_path,
-                p,
-                output_dir,
-                overwrite=args.overwrite,
-                quality=args.quality,
-                single_camera=not args.multi_camera,
-                camera_model=args.camera_model,
-                max_images=args.max_images,
-                print_summary=args.print_summary,
-                temp_root=(base_output_dir.parent / "_tmp") if not multi_run else (base_output_dir / "_tmp"),
-            )
+            metrics: BenchmarkMetrics | None = None
+            sampler: _RssSampler | None = None
+            t0 = time.perf_counter()
+            c0 = time.process_time()
+            if args.benchmark:
+                _reset_cuda_peaks()
+                sampler = _RssSampler(max(0.05, float(args.benchmark_interval)))
+                sampler.start()
+            try:
+                feat, matches, db = run_dim(
+                    dir_path,
+                    p,
+                    output_dir,
+                    overwrite=args.overwrite,
+                    quality=args.quality,
+                    single_camera=not args.multi_camera,
+                    camera_model=args.camera_model,
+                    max_images=args.max_images,
+                    print_summary=args.print_summary,
+                    temp_root=(base_output_dir.parent / "_tmp") if not multi_run else (base_output_dir / "_tmp"),
+                )
+            finally:
+                if sampler is not None:
+                    sampler.stop()
+            if args.benchmark:
+                peak_mb, avg_mb = sampler.summary_mb() if sampler is not None else (None, None)
+                cuda_alloc, cuda_reserved = _cuda_peak_mb()
+                metrics = BenchmarkMetrics(
+                    wall_time_s=time.perf_counter() - t0,
+                    cpu_time_s=time.process_time() - c0,
+                    rss_peak_mb=peak_mb,
+                    rss_avg_mb=avg_mb,
+                    cuda_peak_alloc_mb=cuda_alloc,
+                    cuda_peak_reserved_mb=cuda_reserved,
+                )
             print(f"DIM_PIPELINE={p}")
             print(f"DIM_FEATURES={feat}")
             print(f"DIM_MATCHES={matches}")
             print(f"DIM_DATABASE={db}")
-            results[p] = {"ok": True, "features": str(feat), "matches": str(matches), "database": str(db)}
+            entry: dict[str, Any] = {
+                "ok": True,
+                "features": str(feat),
+                "matches": str(matches),
+                "database": str(db),
+            }
+            if args.benchmark and metrics is not None:
+                entry["benchmark"] = asdict(metrics)
+                try:
+                    summary = summarize_h5(Path(feat), Path(matches))
+                except Exception:
+                    summary = {}
+                row = {
+                    "pipeline": p,
+                    "wall_time_s": metrics.wall_time_s,
+                    "cpu_time_s": metrics.cpu_time_s,
+                    "rss_peak_mb": metrics.rss_peak_mb,
+                    "rss_avg_mb": metrics.rss_avg_mb,
+                    "cuda_peak_alloc_mb": metrics.cuda_peak_alloc_mb,
+                    "cuda_peak_reserved_mb": metrics.cuda_peak_reserved_mb,
+                    "n_images": summary.get("n_images"),
+                    "pairs": summary.get("pairs"),
+                    "matches_total": summary.get("matches_total"),
+                    "keypoints_avg": (summary.get("keypoints_per_image") or {}).get("avg") if summary else None,
+                    "output_dir": str(output_dir),
+                }
+                bench_rows.append(row)
+                print(f"BENCHMARK={json.dumps(row, ensure_ascii=False)}")
+            results[p] = entry
         except Exception as e:  # noqa: BLE001
             print(f"[FAIL] {p}: {e}")
             results[p] = {"ok": False, "error": str(e)}
@@ -418,6 +596,17 @@ def main(argv: list[str] | None = None) -> None:
         report_path = base_output_dir / "report.json"
         report_path.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"REPORT={report_path}")
+        if args.benchmark and bench_rows:
+            bench_json = base_output_dir / "benchmark.json"
+            bench_csv = base_output_dir / "benchmark.csv"
+            bench_json.write_text(json.dumps(bench_rows, ensure_ascii=False, indent=2), encoding="utf-8")
+            with bench_csv.open("w", encoding="utf-8", newline="") as f:
+                fieldnames = list(bench_rows[0].keys())
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(bench_rows)
+            print(f"BENCHMARK_JSON={bench_json}")
+            print(f"BENCHMARK_CSV={bench_csv}")
 
     # If this wrapper is used as a single-run step in the main pipeline, fail fast.
     if len(pipelines) == 1 and had_failure and not args.probe_pipelines:

@@ -267,6 +267,8 @@ class PipelineGUI:
         self.test_pipelines_var = tk.StringVar(value="all")
         self.test_max_images_var = tk.StringVar(value="")
         self.test_quality_var = tk.StringVar(value="low")
+        self.benchmark_var = tk.BooleanVar(value=True)
+        self.benchmark_interval_var = tk.StringVar(value="0.2")
 
         top = ttk.LabelFrame(parent, text="DIM pipelines 测试", style="Section.TLabelframe", padding=10)
         top.pack(fill=tk.X, pady=(0, 10))
@@ -274,9 +276,13 @@ class PipelineGUI:
         self._grid_labeled_entry(top, "pipelines (all/逗号分隔):", self.test_pipelines_var, row=0)
         self._grid_labeled_entry(top, "限制图片数(可空，使用全部):", self.test_max_images_var, row=1)
         self._grid_labeled_combo(top, "DIM quality:", self.test_quality_var, values=DIM_QUALITY_OPTIONS, row=2)
+        ttk.Checkbutton(top, text="生成对比报告（benchmark）", variable=self.benchmark_var).grid(
+            row=3, column=0, sticky="w", pady=(6, 2)
+        )
+        self._grid_labeled_entry(top, "benchmark RSS 采样间隔(s):", self.benchmark_interval_var, row=4)
 
         btns = ttk.Frame(top)
-        btns.grid(row=3, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        btns.grid(row=6, column=0, columnspan=3, sticky="w", pady=(8, 0))
         self.preset_pipelines_btn = ttk.Button(btns, text="填入推荐列表", command=self.fill_recommended_pipelines)
         self.preset_pipelines_btn.pack(side=tk.LEFT, padx=(0, 8))
         self.list_pipelines_btn = ttk.Button(btns, text="列出 DIM pipelines", command=self.list_pipelines_thread)
@@ -289,8 +295,8 @@ class PipelineGUI:
         hint = ttk.Label(
             parent,
             text=(
-                "如果你的数据量不大，可以直接点 “跑测试”(全量) 来比较不同 pipeline。"
-                "需要加速时再用“限制图片数”。"
+                "建议：勾选“生成对比报告（benchmark）”，跑完后会在输出目录生成 benchmark.csv / benchmark.json。"
+                "数据量不大时可直接全量跑；需要加速时再用“限制图片数”。"
             ),
             wraplength=860,
         )
@@ -538,6 +544,15 @@ class PipelineGUI:
             raise ValueError("限制图片数必须是整数或留空") from e
         return pipelines, max_images, quality
 
+    def _get_benchmark_params(self) -> tuple[bool, float]:
+        if not self.benchmark_var.get():
+            return False, 0.2
+        try:
+            interval = float((self.benchmark_interval_var.get() or "").strip() or "0.2")
+        except ValueError as e:
+            raise ValueError("benchmark 采样间隔必须是数字") from e
+        return True, max(0.05, interval)
+
     def fill_recommended_pipelines(self) -> None:
         """
         Fill in a curated list of pipelines that are commonly useful for UAV SfM.
@@ -627,6 +642,7 @@ class PipelineGUI:
 
         try:
             pipelines, max_images, quality = self._get_test_params()
+            do_bench, bench_interval = self._get_benchmark_params()
         except ValueError as e:
             messagebox.showerror("参数错误", str(e))
             return
@@ -644,6 +660,8 @@ class PipelineGUI:
                         output_dir=None,
                         max_images=max_images,
                         quality=quality,
+                        benchmark=do_bench,
+                        benchmark_interval=bench_interval,
                         overwrite=self.overwrite_var.get(),
                         single_camera=not self.dim_multi_camera_var.get(),
                         camera_model=self.dim_camera_model_var.get().strip() or "simple-radial",
@@ -661,6 +679,9 @@ class PipelineGUI:
                         self.dim_camera_model_var.get().strip() or "simple-radial",
                         "--print_summary",
                     ]
+                    if do_bench:
+                        argv.append("--benchmark")
+                        argv += ["--benchmark_interval", str(bench_interval)]
                     if max_images is not None:
                         argv += ["--max_images", str(max_images)]
                     if self.overwrite_var.get():

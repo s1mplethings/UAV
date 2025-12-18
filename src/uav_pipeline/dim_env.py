@@ -255,6 +255,8 @@ class DeepImageMatchingEnv:
         output_dir: str | None = None,
         max_images: int | None = None,
         quality: str = "lowest",
+        benchmark: bool = False,
+        benchmark_interval: float = 0.2,
         overwrite: bool = False,
         single_camera: bool = True,
         camera_model: str = "simple-radial",
@@ -275,6 +277,9 @@ class DeepImageMatchingEnv:
             camera_model,
             "--print_summary",
         ]
+        if benchmark:
+            argv.append("--benchmark")
+            argv += ["--benchmark_interval", str(benchmark_interval)]
         if max_images is not None:
             argv += ["--max_images", str(max_images)]
         if overwrite:
