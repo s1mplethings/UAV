@@ -165,6 +165,18 @@ def summarize_h5(feature_path: Path, match_path: Path) -> dict:
     return summary
 
 
+def _pick_nonexistent_run_dir(base: Path, prefix: str = "run") -> Path:
+    """
+    Pick a non-existing run directory under `base`.
+    Example: base/run_001, base/run_002, ...
+    """
+    for i in range(1, 10_000):
+        cand = base / f"{prefix}_{i:03d}"
+        if not cand.exists():
+            return cand
+    raise RuntimeError("Unable to pick a non-existing run directory")
+
+
 def run_dim(
     dir_path: Path,
     pipeline: str,
@@ -186,6 +198,30 @@ def run_dim(
     base_pipeline, config_file = _resolve_pipeline(pipeline, tmp / "_pipeline_cfg")
     dir_path = _prepare_subset_dir(dir_path=dir_path, temp_root=tmp, max_images=max_images)
 
+    # `output_dir` is our stable location (used by the surrounding pipeline).
+    # deep-image-matching cannot reliably reuse existing outputs, and it will exit
+    # if the output folder already exists and `--force` is not set.
+    #
+    # To make repeated runs ergonomic:
+    # - if `overwrite`: remove the stable folder (fresh run)
+    # - else: write DIM artifacts to a unique subfolder and only write database.db
+    #   to the stable folder.
+    output_dir.mkdir(parents=True, exist_ok=True)
+    dim_out_dir = output_dir
+    if overwrite:
+        # Full reset of DIM artifacts + exported database in this folder.
+        for child in list(output_dir.iterdir()):
+            if child.is_dir():
+                shutil.rmtree(child)
+            else:
+                try:
+                    child.unlink()
+                except FileNotFoundError:
+                    pass
+    else:
+        # Keep old artifacts; put new DIM outputs into a run-specific folder.
+        dim_out_dir = _pick_nonexistent_run_dir(output_dir)
+
     images_dir = dir_path / "images"
     if not images_dir.exists():
         raise FileNotFoundError(f"{dir_path} 下找不到 images 目录")
@@ -206,8 +242,8 @@ def run_dim(
     args = {
         "dir": str(dir_path),
         "pipeline": base_pipeline,
-        "outs": output_dir,  # Config expects a Path-like with .exists()
-        "force": overwrite,
+        "outs": dim_out_dir,  # Config expects a Path-like with .exists()
+        "force": False,  # we manage deletion/uniqueness ourselves
         "quality": quality,
         "config_file": str(config_file) if config_file else None,
         # Keep other options at their DIM defaults.
@@ -217,6 +253,7 @@ def run_dim(
     matcher = ImageMatcher(cfg)
     feature_path, match_path = matcher.run()
 
+    # Always write COLMAP DB to the stable folder so downstream steps can find it.
     db_path = output_dir / "database.db"
     export_matches_to_colmap_db(
         img_dir=Path(cfg.general["image_dir"]),
