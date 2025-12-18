@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional, Sequence
 
 from .dim_env import DeepImageMatchingEnv
+from .db_geometric_verification import geometric_verification_db
 
 LogFn = Callable[[str], None]
 
@@ -149,13 +150,8 @@ def run_dim(cfg: PipelineConfig, log: LogFn = _default_log) -> None:
     os.makedirs(sparse_dir, exist_ok=True)
 
     if cfg.geom_verification:
-        geom_cmd = [
-            cfg.colmap_bin,
-            "geometric_verification",
-            "--database_path",
-            db_path,
-        ]
-        run_cmd(geom_cmd, log=log)
+        log("[INFO] Geometric verification: Python fallback (writes two_view_geometries)")
+        geometric_verification_db(db_path, log=log)
 
     mapper_cmd = [
         cfg.colmap_bin,

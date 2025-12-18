@@ -20,6 +20,8 @@ from typing import Callable, Iterable, Sequence
 
 LogFn = Callable[[str], None]
 
+from .db_geometric_verification import geometric_verification_db
+
 
 class DeepImageMatchingEnv:
     """
@@ -351,13 +353,8 @@ class DeepImageMatchingEnv:
             sparse_dir.mkdir(parents=True, exist_ok=True)
 
             if geom_verification:
-                geom_cmd = [
-                    colmap_bin,
-                    "geometric_verification",
-                    "--database_path",
-                    str(db_path),
-                ]
-                self._run(geom_cmd)
+                self.log("[INFO] Geometric verification: Python fallback (writes two_view_geometries)")
+                geometric_verification_db(str(db_path), log=self.log)
 
             mapper_cmd = [
                 colmap_bin,
