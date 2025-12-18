@@ -57,6 +57,8 @@ Notes
 
 Troubleshooting
 ---------------
+- 报错 `[WinError 2] 系统找不到指定的文件` 且日志里类似 `colmap geometric_verification ...`：说明找不到 COLMAP 可执行文件。
+  - 解决：在 GUI 里把 “COLMAP 可执行文件” 设置为 `.../COLMAP/bin/colmap.exe` 的完整路径，或把该目录加入 PATH。
 - 报错 `Numpy is not available` / 提示 NumPy 2.x 不兼容 torch：这是 managed DIM env 里 numpy 版本过新导致。可以在 env 内强制降级：
   - Windows 示例：`<work_dir 或仓库>/src/uav_pipeline/py39_dim_env/python.exe -m pip install --upgrade --force-reinstall "numpy<2"`
 

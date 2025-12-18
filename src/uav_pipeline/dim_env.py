@@ -76,14 +76,22 @@ class DeepImageMatchingEnv:
         Run a command and log stdout even if it fails, so GUI/CLI users can see errors.
         """
         self.log("[DIM ENV] " + " ".join(map(str, cmd)))
-        proc = subprocess.Popen(
-            cmd,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-        )
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+        except FileNotFoundError as e:
+            exe = str(cmd[0]) if cmd else "<empty>"
+            raise FileNotFoundError(
+                f"系统找不到可执行文件: {exe}\n"
+                "如果这是 COLMAP，请在 GUI/CLI 里设置 --colmap_bin 为 colmap.exe 的完整路径，"
+                "或把 COLMAP 的 bin 目录加入 PATH。"
+            ) from e
         assert proc.stdout is not None
         for line in proc.stdout:
             self.log(line.rstrip())

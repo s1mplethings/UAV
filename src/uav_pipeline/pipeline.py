@@ -34,15 +34,22 @@ def run_cmd(
     This makes GUI logs show the real error instead of just returncode.
     """
     log(f"[RUN] {' '.join(str(c) for c in cmd)}")
-    proc = subprocess.Popen(
-        cmd,
-        cwd=cwd,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-    )
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=cwd,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+    except FileNotFoundError as e:
+        exe = str(cmd[0]) if cmd else "<empty>"
+        raise FileNotFoundError(
+            f"系统找不到可执行文件: {exe}\n"
+            "如果这是 COLMAP，请设置 --colmap_bin 为 colmap.exe 的完整路径，或把 COLMAP/bin 加入 PATH。"
+        ) from e
     assert proc.stdout is not None
     for line in proc.stdout:
         log(line.rstrip())

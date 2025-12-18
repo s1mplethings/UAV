@@ -13,6 +13,8 @@ import queue
 import threading
 import tkinter as tk
 import sys
+import shutil
+from pathlib import Path
 from tkinter import filedialog, messagebox
 from tkinter.scrolledtext import ScrolledText
 from tkinter import ttk
@@ -41,6 +43,24 @@ TEST_PIPELINE_RECOMMENDED = "sift+kornia_matcher,sift+lightglue,aliked+lightglue
 MODE_FULL = "全流程：DIM → Sparse → Dense"
 MODE_DIM_ONLY = "仅 DIM：特征/匹配 → Sparse"
 MODE_DENSE_ONLY = "仅 Dense：使用已有 Sparse"
+
+def _detect_colmap_bin() -> str:
+    """
+    Best-effort COLMAP binary detection for Windows-friendly UX.
+    Falls back to 'colmap' (requires PATH).
+    """
+    found = shutil.which("colmap")
+    if found:
+        return found
+    if os.name == "nt":
+        candidates = [
+            r"C:\Program Files\COLMAP\bin\colmap.exe",
+            r"C:\Program Files (x86)\COLMAP\bin\colmap.exe",
+        ]
+        for c in candidates:
+            if Path(c).exists():
+                return c
+    return "colmap"
 
 
 class ScrollableFrame(ttk.Frame):
@@ -155,7 +175,7 @@ class PipelineGUI:
     def _build_run_tab(self, parent: ttk.Frame) -> None:
         # Vars
         self.work_dir_var = tk.StringVar()
-        self.colmap_var = tk.StringVar(value="colmap")
+        self.colmap_var = tk.StringVar(value=_detect_colmap_bin())
         self.pipeline_var = tk.StringVar(value="superpoint+lightglue")
         self.dense_dir_var = tk.StringVar()
         self.gpu_var = tk.StringVar()
