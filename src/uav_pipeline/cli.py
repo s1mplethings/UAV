@@ -63,7 +63,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--test_dim_pipelines",
         default=None,
-        help="跑一个小规模 smoke test：'all' 或逗号分隔列表（只用前 N 张图）。",
+        help="测试 pipelines：'all' 或逗号分隔列表（可配合 --test_max_images 限制图片数）。",
     )
     parser.add_argument(
         "--test_max_images",
@@ -80,7 +80,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--test_output_dir",
         default=None,
-        help="smoke test 输出目录（默认 <dir>/dim_tests）。",
+        help="测试输出目录（默认 <dir>/dim_tests）。",
+    )
+    parser.add_argument(
+        "--test_run_dense",
+        action="store_true",
+        help="测试时基于每个 pipeline 的匹配结果运行 COLMAP dense，并输出点云。",
     )
     parser.add_argument(
         "--benchmark",
@@ -201,6 +206,13 @@ def main(argv: list[str] | None = None) -> None:
                 cmd += ["--max_images", str(args.test_max_images)]
             if args.test_output_dir:
                 cmd += ["--output", args.test_output_dir]
+            if args.test_run_dense:
+                cmd.append("--run_dense")
+                cmd += ["--colmap_bin", args.colmap_bin]
+                if args.patch_match_gpu is not None:
+                    cmd += ["--patch_match_gpu", str(args.patch_match_gpu)]
+                if args.skip_geom_verification:
+                    cmd.append("--skip_geom_verification")
             if args.overwrite:
                 cmd.append("--overwrite")
             if args.dim_multi_camera:
@@ -218,6 +230,10 @@ def main(argv: list[str] | None = None) -> None:
                 overwrite=args.overwrite,
                 single_camera=not args.dim_multi_camera,
                 camera_model=args.dim_camera_model,
+                run_dense=args.test_run_dense,
+                colmap_bin=args.colmap_bin,
+                patch_match_gpu=args.patch_match_gpu,
+                geom_verification=not args.skip_geom_verification,
                 gpu=args.gpu,
             )
         return

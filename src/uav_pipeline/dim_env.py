@@ -260,9 +260,13 @@ class DeepImageMatchingEnv:
         overwrite: bool = False,
         single_camera: bool = True,
         camera_model: str = "simple-radial",
+        run_dense: bool = False,
+        colmap_bin: str | None = None,
+        patch_match_gpu: int | None = None,
+        geom_verification: bool = True,
         gpu: int | None = None,
     ) -> None:
-        """Run matching for multiple pipelines (optionally limit to first N images)."""
+        """Run matching for multiple pipelines (optionally limit to first N images); optionally run COLMAP dense MVS."""
         out_dir = output_dir or str(Path(scene_dir) / "dim_tests")
         argv: list[str] = [
             "--dir",
@@ -286,6 +290,14 @@ class DeepImageMatchingEnv:
             argv.append("--overwrite")
         if not single_camera:
             argv.append("--multi_camera")
+        if run_dense:
+            argv.append("--run_dense")
+            if colmap_bin:
+                argv += ["--colmap_bin", colmap_bin]
+            if patch_match_gpu is not None:
+                argv += ["--patch_match_gpu", str(patch_match_gpu)]
+            if not geom_verification:
+                argv.append("--skip_geom_verification")
         self.run_dim_wrapper(argv, gpu=gpu)
 
     def run_dim(

@@ -14,6 +14,7 @@ import csv
 import json
 import os
 import shutil
+import subprocess
 import threading
 import time
 from dataclasses import asdict, dataclass
@@ -292,6 +293,115 @@ def _pick_nonexistent_run_dir(base: Path, prefix: str = "run") -> Path:
     raise RuntimeError("Unable to pick a non-existing run directory")
 
 
+def _run_cmd(cmd: list[str]) -> None:
+    print(">> " + " ".join(str(c) for c in cmd))
+    subprocess.run(cmd, check=True)
+
+
+def _find_sparse_model_dir(sparse_root: Path) -> Path:
+    candidates = [sparse_root, sparse_root / "0"]
+    for cand in candidates:
+        if (cand / "cameras.bin").exists() and (cand / "images.bin").exists():
+            return cand
+    for sub in sparse_root.iterdir():
+        if sub.is_dir() and (sub / "cameras.bin").exists() and (sub / "images.bin").exists():
+            return sub
+    raise RuntimeError(f"找不到 sparse 模型: {sparse_root}")
+
+
+def _run_colmap_dense(
+    *,
+    colmap_bin: str,
+    images_dir: Path,
+    database_path: Path,
+    output_dir: Path,
+    overwrite: bool,
+    patch_match_gpu: int | None,
+    geom_verification: bool,
+) -> Path:
+    if not images_dir.exists():
+        raise FileNotFoundError(f"找不到 images 目录: {images_dir}")
+    if not database_path.exists():
+        raise FileNotFoundError(f"找不到 COLMAP 数据库: {database_path}")
+
+    sparse_root = output_dir / "sparse"
+    dense_root = output_dir / "dense"
+    if overwrite:
+        if sparse_root.exists():
+            shutil.rmtree(sparse_root)
+        if dense_root.exists():
+            shutil.rmtree(dense_root)
+    sparse_root.mkdir(parents=True, exist_ok=True)
+
+    if geom_verification:
+        from .db_geometric_verification import geometric_verification_db
+
+        print("[INFO] Geometric verification: Python fallback (writes two_view_geometries)")
+        geometric_verification_db(str(database_path), log=print)
+
+    _run_cmd(
+        [
+            colmap_bin,
+            "mapper",
+            "--database_path",
+            str(database_path),
+            "--image_path",
+            str(images_dir),
+            "--output_path",
+            str(sparse_root),
+        ]
+    )
+
+    sparse_model = _find_sparse_model_dir(sparse_root)
+    dense_root.mkdir(parents=True, exist_ok=True)
+
+    _run_cmd(
+        [
+            colmap_bin,
+            "image_undistorter",
+            "--image_path",
+            str(images_dir),
+            "--input_path",
+            str(sparse_model),
+            "--output_path",
+            str(dense_root),
+            "--output_type",
+            "COLMAP",
+        ]
+    )
+
+    cmd_patch_match = [
+        colmap_bin,
+        "patch_match_stereo",
+        "--workspace_path",
+        str(dense_root),
+        "--workspace_format",
+        "COLMAP",
+        "--PatchMatchStereo.geom_consistency",
+        "true",
+    ]
+    if patch_match_gpu is not None:
+        cmd_patch_match += ["--PatchMatchStereo.gpu_index", str(patch_match_gpu)]
+    _run_cmd(cmd_patch_match)
+
+    fused_path = dense_root / "fused.ply"
+    _run_cmd(
+        [
+            colmap_bin,
+            "stereo_fusion",
+            "--workspace_path",
+            str(dense_root),
+            "--workspace_format",
+            "COLMAP",
+            "--input_type",
+            "geometric",
+            "--output_path",
+            str(fused_path),
+        ]
+    )
+    return fused_path
+
+
 def run_dim(
     dir_path: Path,
     pipeline: str,
@@ -304,10 +414,10 @@ def run_dim(
     max_images: int | None = None,
     print_summary: bool = False,
     temp_root: Path | None = None,
-) -> tuple[Path, Path, Path]:
+) -> tuple[Path, Path, Path, Path]:
     """
     Run DIM feature extraction + matching and export a COLMAP database.
-    Returns (feature_path, match_path, database_path).
+    Returns (feature_path, match_path, database_path, images_dir).
     """
     tmp = temp_root or (dir_path / "_tmp_dim_wrapper")
     base_pipeline, config_file = _resolve_pipeline(pipeline, tmp / "_pipeline_cfg")
@@ -359,6 +469,7 @@ def run_dim(
     }
 
     cfg = Config(args)
+    images_dir = Path(cfg.general["image_dir"])
     matcher = ImageMatcher(cfg)
     feature_path, match_path = matcher.run()
 
@@ -374,7 +485,7 @@ def run_dim(
     )
     if print_summary:
         print(json.dumps(summarize_h5(Path(feature_path), Path(match_path)), ensure_ascii=False))
-    return feature_path, match_path, db_path
+    return feature_path, match_path, db_path, images_dir
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -413,6 +524,27 @@ def main(argv: list[str] | None = None) -> None:
         default="simple-radial",
         choices=["simple-pinhole", "pinhole", "simple-radial", "opencv"],
         help="COLMAP camera model used to initialize the database (default: simple-radial).",
+    )
+    parser.add_argument(
+        "--run_dense",
+        action="store_true",
+        help="Run COLMAP mapper + dense MVS after DIM and output fused point clouds.",
+    )
+    parser.add_argument(
+        "--colmap_bin",
+        default="colmap",
+        help="COLMAP executable path for --run_dense (default: colmap).",
+    )
+    parser.add_argument(
+        "--patch_match_gpu",
+        type=int,
+        default=None,
+        help="GPU index for COLMAP patch_match_stereo (optional).",
+    )
+    parser.add_argument(
+        "--skip_geom_verification",
+        action="store_true",
+        help="Skip Python geometric verification before COLMAP mapper.",
     )
     parser.add_argument("--list_pipelines", action="store_true", help="List available DIM pipelines and exit.")
     parser.add_argument(
@@ -528,7 +660,7 @@ def main(argv: list[str] | None = None) -> None:
                 sampler = _RssSampler(max(0.05, float(args.benchmark_interval)))
                 sampler.start()
             try:
-                feat, matches, db = run_dim(
+                feat, matches, db, images_dir = run_dim(
                     dir_path,
                     p,
                     output_dir,
@@ -558,12 +690,26 @@ def main(argv: list[str] | None = None) -> None:
             print(f"DIM_FEATURES={feat}")
             print(f"DIM_MATCHES={matches}")
             print(f"DIM_DATABASE={db}")
+            fused: Path | None = None
+            if args.run_dense:
+                fused = _run_colmap_dense(
+                    colmap_bin=args.colmap_bin,
+                    images_dir=images_dir,
+                    database_path=Path(db),
+                    output_dir=Path(output_dir),
+                    overwrite=args.overwrite,
+                    patch_match_gpu=args.patch_match_gpu,
+                    geom_verification=not args.skip_geom_verification,
+                )
+                print(f"DENSE_FUSED={fused}")
             entry: dict[str, Any] = {
                 "ok": True,
                 "features": str(feat),
                 "matches": str(matches),
                 "database": str(db),
             }
+            if fused is not None:
+                entry["fused"] = str(fused)
             if args.benchmark and metrics is not None:
                 entry["benchmark"] = asdict(metrics)
                 try:

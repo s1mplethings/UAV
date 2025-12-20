@@ -29,10 +29,11 @@ uav-gui
 # 查看 / 测试 DIM pipelines（模型组合）
 uav-dim-colmap --list_dim_pipelines
 uav-dim-colmap --dir D:/path/to/work_dir --probe_dim_pipelines all --test_quality lowest
-uav-dim-colmap --dir D:/path/to/work_dir --test_dim_pipelines all --test_quality low --benchmark --overwrite
+uav-dim-colmap --dir D:/path/to/work_dir --test_dim_pipelines all --test_quality low --benchmark --test_run_dense --overwrite
 
 # GUI 里也可以直接做同样的测试：
-# - “测试”页：填写 pipelines（all/逗号分隔）、N、quality，然后点 “Probe pipelines / 跑 smoke test”。
+# - “测试”页：填写 pipelines（all/逗号分隔）、N、quality，然后点 “Probe pipelines / 跑测试”。
+#   勾选“测试后生成点云（Dense）”会为每个 pipeline 输出 dense/fused.ply。
 # - “运行”页：用“模式”下拉选择 “全流程 / 仅 DIM / 仅 Dense”，再点 “开始运行”。
 # - 勾选 “生成对比报告（benchmark）” 会输出 `benchmark.csv` / `benchmark.json` 便于对比速度与资源占用。
 

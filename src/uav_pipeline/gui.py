@@ -269,6 +269,7 @@ class PipelineGUI:
         self.test_quality_var = tk.StringVar(value="low")
         self.benchmark_var = tk.BooleanVar(value=True)
         self.benchmark_interval_var = tk.StringVar(value="0.2")
+        self.test_run_dense_var = tk.BooleanVar(value=True)
 
         top = ttk.LabelFrame(parent, text="DIM pipelines 测试", style="Section.TLabelframe", padding=10)
         top.pack(fill=tk.X, pady=(0, 10))
@@ -279,17 +280,20 @@ class PipelineGUI:
         ttk.Checkbutton(top, text="生成对比报告（benchmark）", variable=self.benchmark_var).grid(
             row=3, column=0, sticky="w", pady=(6, 2)
         )
-        self._grid_labeled_entry(top, "benchmark RSS 采样间隔(s):", self.benchmark_interval_var, row=4)
+        ttk.Checkbutton(top, text="测试后生成点云（Dense）", variable=self.test_run_dense_var).grid(
+            row=4, column=0, sticky="w", pady=(2, 2)
+        )
+        self._grid_labeled_entry(top, "benchmark RSS 采样间隔(s):", self.benchmark_interval_var, row=5)
 
         btns = ttk.Frame(top)
-        btns.grid(row=6, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        btns.grid(row=7, column=0, columnspan=3, sticky="w", pady=(8, 0))
         self.preset_pipelines_btn = ttk.Button(btns, text="填入推荐列表", command=self.fill_recommended_pipelines)
         self.preset_pipelines_btn.pack(side=tk.LEFT, padx=(0, 8))
         self.list_pipelines_btn = ttk.Button(btns, text="列出 DIM pipelines", command=self.list_pipelines_thread)
         self.list_pipelines_btn.pack(side=tk.LEFT, padx=(0, 8))
         self.probe_pipelines_btn = ttk.Button(btns, text="Probe pipelines", command=self.probe_pipelines_thread)
         self.probe_pipelines_btn.pack(side=tk.LEFT, padx=(0, 8))
-        self.test_pipelines_btn = ttk.Button(btns, text="跑 smoke test", command=self.test_pipelines_thread)
+        self.test_pipelines_btn = ttk.Button(btns, text="跑测试", command=self.test_pipelines_thread)
         self.test_pipelines_btn.pack(side=tk.LEFT)
 
         hint = ttk.Label(
@@ -297,6 +301,7 @@ class PipelineGUI:
             text=(
                 "建议：勾选“生成对比报告（benchmark）”，跑完后会在输出目录生成 benchmark.csv / benchmark.json。"
                 "数据量不大时可直接全量跑；需要加速时再用“限制图片数”。"
+                "勾选“测试后生成点云（Dense）”会为每个 pipeline 输出 dense/fused.ply。"
             ),
             wraplength=860,
         )
@@ -649,10 +654,12 @@ class PipelineGUI:
 
         self.running = True
         self._set_busy(True)
-        self._log("===== 跑 DIM pipelines 测试 =====")
+        run_dense = self.test_run_dense_var.get()
+        self._log("===== 跑 DIM pipelines 测试 =====" + (" + Dense" if run_dense else ""))
 
         def worker() -> None:
             try:
+                colmap_bin = self.colmap_var.get().strip() or "colmap"
                 if self.use_dim_env_var.get():
                     self._get_dim_env().test_pipelines(
                         scene_dir=work_dir,
@@ -665,6 +672,10 @@ class PipelineGUI:
                         overwrite=self.overwrite_var.get(),
                         single_camera=not self.dim_multi_camera_var.get(),
                         camera_model=self.dim_camera_model_var.get().strip() or "simple-radial",
+                        run_dense=run_dense,
+                        colmap_bin=colmap_bin,
+                        patch_match_gpu=self._str_to_int(self.pm_gpu_var.get()),
+                        geom_verification=not self.skip_geom_verify_var.get(),
                         gpu=self._str_to_int(self.gpu_var.get()),
                     )
                 else:
@@ -684,6 +695,14 @@ class PipelineGUI:
                         argv += ["--benchmark_interval", str(bench_interval)]
                     if max_images is not None:
                         argv += ["--max_images", str(max_images)]
+                    if run_dense:
+                        argv.append("--run_dense")
+                        argv += ["--colmap_bin", colmap_bin]
+                        pm_gpu = self._str_to_int(self.pm_gpu_var.get())
+                        if pm_gpu is not None:
+                            argv += ["--patch_match_gpu", str(pm_gpu)]
+                        if self.skip_geom_verify_var.get():
+                            argv.append("--skip_geom_verification")
                     if self.overwrite_var.get():
                         argv.append("--overwrite")
                     if self.dim_multi_camera_var.get():
