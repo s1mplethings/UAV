@@ -231,6 +231,109 @@ def _iter_images(images_dir: Path) -> list[Path]:
     return sorted(imgs, key=lambda p: p.name)
 
 
+def _get_image_size(path: Path) -> tuple[int, int] | None:
+    try:
+        from PIL import Image  # type: ignore
+
+        with Image.open(path) as img:
+            return int(img.width), int(img.height)
+    except Exception:
+        pass
+
+    try:
+        import cv2  # type: ignore
+
+        img = cv2.imread(str(path))
+        if img is None:
+            return None
+        h, w = img.shape[:2]
+        return int(w), int(h)
+    except Exception:
+        pass
+
+    try:
+        import imageio.v3 as iio  # type: ignore
+
+        img = iio.imread(path)
+        h, w = img.shape[:2]
+        return int(w), int(h)
+    except Exception:
+        return _get_image_size_bytes(path)
+
+
+def _get_image_size_bytes(path: Path) -> tuple[int, int] | None:
+    try:
+        with path.open("rb") as f:
+            header = f.read(24)
+            if header.startswith(b"\x89PNG\r\n\x1a\n") and len(header) >= 24:
+                width = int.from_bytes(header[16:20], "big")
+                height = int.from_bytes(header[20:24], "big")
+                return width, height
+            if header[:2] != b"\xff\xd8":
+                return None
+
+            f.seek(2)
+            sof_markers = {
+                0xC0,
+                0xC1,
+                0xC2,
+                0xC3,
+                0xC5,
+                0xC6,
+                0xC7,
+                0xC9,
+                0xCA,
+                0xCB,
+                0xCD,
+                0xCE,
+                0xCF,
+            }
+            while True:
+                byte = f.read(1)
+                if not byte:
+                    return None
+                if byte != b"\xff":
+                    continue
+                marker = f.read(1)
+                if not marker:
+                    return None
+                while marker == b"\xff":
+                    marker = f.read(1)
+                    if not marker:
+                        return None
+                m = marker[0]
+                if m in sof_markers:
+                    seg_len = f.read(2)
+                    if len(seg_len) != 2:
+                        return None
+                    _ = f.read(1)
+                    dims = f.read(4)
+                    if len(dims) != 4:
+                        return None
+                    height = int.from_bytes(dims[0:2], "big")
+                    width = int.from_bytes(dims[2:4], "big")
+                    return width, height
+                seg_len = f.read(2)
+                if len(seg_len) != 2:
+                    return None
+                length = int.from_bytes(seg_len, "big")
+                if length < 2:
+                    return None
+                f.seek(length - 2, 1)
+    except Exception:
+        return None
+
+
+def _detect_image_sizes(images_dir: Path) -> dict[tuple[int, int], int]:
+    sizes: dict[tuple[int, int], int] = {}
+    for p in _iter_images(images_dir):
+        size = _get_image_size(p)
+        if size is None:
+            continue
+        sizes[size] = sizes.get(size, 0) + 1
+    return sizes
+
+
 def _prepare_subset_dir(
     *,
     dir_path: Path,
@@ -604,6 +707,15 @@ def run_dim(
 
     # Always write COLMAP DB to the stable folder so downstream steps can find it.
     db_path = output_dir / "database.db"
+    if single_camera:
+        sizes = _detect_image_sizes(images_dir)
+        if len(sizes) > 1:
+            sample = ", ".join(f"{w}x{h}({n})" for (w, h), n in list(sizes.items())[:4])
+            print(
+                "[WARN] Detected mixed image sizes; forcing multi_camera to avoid COLMAP undistorter errors: "
+                + sample
+            )
+            single_camera = False
     export_matches_to_colmap_db(
         img_dir=Path(cfg.general["image_dir"]),
         feature_path=Path(feature_path),
