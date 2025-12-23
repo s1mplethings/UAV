@@ -13,10 +13,13 @@ import argparse
 import csv
 import json
 import os
+import re
 import shutil
 import subprocess
 import threading
 import time
+import urllib.error
+import urllib.request
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -32,6 +35,10 @@ PIPELINE_ALIASES: dict[str, dict] = {
         "config": {"matcher": {"name": "lightglue"}},
     },
 }
+
+SUPERGLUE_OUTDOOR_URL = (
+    "https://github.com/magicleap/SuperGluePretrainedNetwork/raw/master/models/weights/superglue_outdoor.pth"
+)
 
 
 def export_matches_to_colmap_db(
@@ -90,6 +97,128 @@ def _resolve_pipeline(pipeline: str, temp_root: Path) -> tuple[str, Path | None]
     cfg_path = temp_root / f"{pipeline.replace('+', '_')}.yaml"
     cfg_path.write_text(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True), encoding="utf-8")
     return base, cfg_path
+
+
+def _is_zip_error(msg: str) -> bool:
+    return "PytorchStreamReader failed reading zip archive" in msg
+
+
+def _extract_superglue_missing_path(msg: str) -> Path | None:
+    match = re.search(r"No such file or directory: ['\"]([^'\"]+superglue_outdoor\\.pth)['\"]", msg)
+    if match:
+        return Path(match.group(1))
+    return None
+
+
+def _purge_torch_hub_checkpoints(log=print) -> bool:
+    try:
+        import torch  # type: ignore
+
+        hub_dir = Path(torch.hub.get_dir())
+    except Exception as exc:  # noqa: BLE001
+        log(f"[WARN] Unable to locate torch hub dir: {exc}")
+        return False
+
+    ckpt_dir = hub_dir / "checkpoints"
+    if not ckpt_dir.exists():
+        return False
+
+    try:
+        shutil.rmtree(ckpt_dir)
+        log(f"[INFO] Cleared torch hub checkpoints: {ckpt_dir}")
+        return True
+    except Exception as exc:  # noqa: BLE001
+        log(f"[WARN] Failed to clear torch hub checkpoints: {exc}")
+        return False
+
+
+def _ensure_superglue_weights(dest: Path | None, log=print) -> bool:
+    if dest is None:
+        try:
+            import deep_image_matching  # type: ignore
+
+            pkg_root = Path(deep_image_matching.__file__).resolve().parent
+            dest = (
+                pkg_root
+                / "thirdparty"
+                / "SuperGluePretrainedNetwork"
+                / "models"
+                / "weights"
+                / "superglue_outdoor.pth"
+            )
+        except Exception as exc:  # noqa: BLE001
+            log(f"[WARN] Unable to resolve SuperGlue weights path: {exc}")
+            return False
+
+    if dest.exists():
+        return True
+
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        log(f"[INFO] Downloading SuperGlue weights to {dest}")
+        urllib.request.urlretrieve(SUPERGLUE_OUTDOOR_URL, dest)
+        return dest.exists()
+    except (OSError, urllib.error.URLError) as exc:
+        log(f"[WARN] Failed to download SuperGlue weights: {exc}")
+        return False
+
+
+def _maybe_recover_from_error(err: Exception, log=print) -> bool:
+    msg = str(err)
+    if _is_zip_error(msg):
+        return _purge_torch_hub_checkpoints(log=log)
+    missing = _extract_superglue_missing_path(msg)
+    if missing is not None:
+        return _ensure_superglue_weights(missing, log=log)
+    return False
+
+
+def _probe_pipeline(
+    dir_path: Path,
+    pipeline: str,
+    quality: str,
+    temp_root: Path,
+    log=print,
+) -> tuple[bool, str | None, str | None]:
+    """
+    Try to initialize a pipeline without running matching.
+    Returns (ok, error, fallback_pipeline).
+    """
+
+    def _try_probe(p: str) -> None:
+        from deep_image_matching.config import Config
+        from deep_image_matching.image_matching import ImageMatcher
+
+        safe_name = p.replace("/", "_").replace("\\", "_").replace(":", "_")
+        output_dir = temp_root / "_probe" / safe_name
+        base_pipeline, config_file = _resolve_pipeline(p, temp_root / "_pipeline_cfg")
+        cfg = Config(
+            {
+                "dir": str(dir_path),
+                "pipeline": base_pipeline,
+                "config_file": str(config_file) if config_file else None,
+                "outs": output_dir,
+                "force": True,
+                "quality": quality,
+            }
+        )
+        _ = ImageMatcher(cfg)
+
+    for attempt in range(2):
+        try:
+            _try_probe(pipeline)
+            return True, None, None
+        except Exception as exc:  # noqa: BLE001
+            if attempt == 0 and _maybe_recover_from_error(exc, log=log):
+                continue
+            if pipeline == "sift+lightglue":
+                try:
+                    _try_probe("sift+kornia_matcher")
+                    return True, None, "sift+kornia_matcher"
+                except Exception:  # noqa: BLE001
+                    pass
+            return False, str(exc), None
+    return False, "probe failed", None
 
 
 def _iter_images(images_dir: Path) -> list[Path]:
@@ -488,6 +617,56 @@ def run_dim(
     return feature_path, match_path, db_path, images_dir
 
 
+def _run_dim_with_repair(
+    *,
+    dir_path: Path,
+    pipeline: str,
+    output_dir: Path,
+    overwrite: bool,
+    quality: str,
+    single_camera: bool,
+    camera_model: str,
+    max_images: int | None,
+    print_summary: bool,
+    temp_root: Path,
+    fallback_pipeline: str | None = None,
+    log=print,
+) -> tuple[Path, Path, Path, Path, str]:
+    """
+    Run DIM with a small set of automatic recovery steps and optional fallback.
+    Returns (features, matches, db, images_dir, pipeline_used).
+    """
+    attempted_repair = False
+    tried_fallback = False
+    active_pipeline = pipeline
+    while True:
+        try:
+            feat, matches, db, images_dir = run_dim(
+                dir_path,
+                active_pipeline,
+                output_dir,
+                overwrite=overwrite,
+                quality=quality,
+                single_camera=single_camera,
+                camera_model=camera_model,
+                max_images=max_images,
+                print_summary=print_summary,
+                temp_root=temp_root,
+            )
+            return feat, matches, db, images_dir, active_pipeline
+        except Exception as exc:  # noqa: BLE001
+            if not attempted_repair and _maybe_recover_from_error(exc, log=log):
+                attempted_repair = True
+                log("[INFO] Retrying DIM after recovery step")
+                continue
+            if active_pipeline == "sift+lightglue" and not tried_fallback:
+                tried_fallback = True
+                active_pipeline = fallback_pipeline or "sift+kornia_matcher"
+                log(f"[WARN] Pipeline sift+lightglue failed; falling back to {active_pipeline}")
+                continue
+            raise
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Deep-image-matching wrapper (features + matches + COLMAP DB export)")
     parser.add_argument("--dir", required=False, help="Project directory containing an images/ folder.")
@@ -589,8 +768,10 @@ def main(argv: list[str] | None = None) -> None:
     else:
         pipelines = [args.pipeline]
 
+    original_pipeline_count = len(pipelines)
+    single_run = (not args.probe_pipelines) and (original_pipeline_count == 1)
     # Decide output root.
-    multi_run = args.probe_pipelines or (len(pipelines) > 1)
+    multi_run = args.probe_pipelines or (original_pipeline_count > 1)
     if not multi_run:
         base_output_dir = Path(args.output) if args.output else (dir_path / "dim_outputs")
         base_output_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -600,6 +781,8 @@ def main(argv: list[str] | None = None) -> None:
         else:
             base_output_dir = Path(args.output) if args.output else (dir_path / "dim_tests")
         base_output_dir.mkdir(parents=True, exist_ok=True)
+    tmp_root = (base_output_dir.parent / "_tmp") if not multi_run else (base_output_dir / "_tmp")
+    tmp_root.mkdir(parents=True, exist_ok=True)
 
     def pick_output_dir_multi(root: Path, name: str, overwrite: bool) -> Path:
         cand = root / name
@@ -616,35 +799,42 @@ def main(argv: list[str] | None = None) -> None:
     if args.probe_pipelines:
         results: dict[str, dict] = {}
         for p in pipelines:
-            try:
-                from deep_image_matching.config import Config
-                from deep_image_matching.image_matching import ImageMatcher
-
-                safe_name = p.replace("/", "_").replace("\\", "_").replace(":", "_")
-                output_dir = pick_output_dir_multi(base_output_dir, safe_name, overwrite=True)
-                tmp_root = base_output_dir / "_tmp"
-                base_pipeline, config_file = _resolve_pipeline(p, tmp_root / "_pipeline_cfg")
-                cfg = Config(
-                    {
-                        "dir": str(dir_path),
-                        "pipeline": base_pipeline,
-                        "config_file": str(config_file) if config_file else None,
-                        "outs": output_dir,
-                        "force": True,
-                        "quality": args.quality,
-                    }
-                )
-                _ = ImageMatcher(cfg)
-                results[p] = {"ok": True}
-                print(f"[OK] {p}")
-            except Exception as e:  # noqa: BLE001
-                results[p] = {"ok": False, "error": str(e)}
-                print(f"[FAIL] {p}: {e}")
+            ok, err, fallback = _probe_pipeline(dir_path, p, args.quality, tmp_root, log=print)
+            if ok:
+                entry = {"ok": True}
+                if fallback:
+                    entry["fallback_pipeline"] = fallback
+                results[p] = entry
+                if fallback:
+                    print(f"[OK] {p} (fallback: {fallback})")
+                else:
+                    print(f"[OK] {p}")
+            else:
+                results[p] = {"ok": False, "error": err}
+                print(f"[FAIL] {p}: {err}")
         if args.print_summary:
             print(json.dumps(results, ensure_ascii=False, indent=2))
         return
 
+    fallback_map: dict[str, str] = {}
+    skipped: dict[str, str] = {}
+    if len(pipelines) > 1:
+        filtered: list[str] = []
+        for p in pipelines:
+            ok, err, fallback = _probe_pipeline(dir_path, p, args.quality, tmp_root, log=print)
+            if ok:
+                filtered.append(p)
+                if fallback:
+                    fallback_map[p] = fallback
+                    print(f"[WARN] {p} failed init; will fall back to {fallback}")
+            else:
+                skipped[p] = err or "probe failed"
+                print(f"[SKIP] {p}: {err}")
+        pipelines = filtered
+
     results: dict[str, dict] = {}
+    for p, err in skipped.items():
+        results[p] = {"ok": False, "skipped": True, "error": err}
     had_failure = False
     bench_rows: list[dict[str, Any]] = []
     for p in pipelines:
@@ -660,17 +850,22 @@ def main(argv: list[str] | None = None) -> None:
                 sampler = _RssSampler(max(0.05, float(args.benchmark_interval)))
                 sampler.start()
             try:
-                feat, matches, db, images_dir = run_dim(
-                    dir_path,
-                    p,
-                    output_dir,
+                pipeline_to_run = fallback_map.get(p, p)
+                if pipeline_to_run != p:
+                    print(f"[WARN] {p} -> {pipeline_to_run}")
+                feat, matches, db, images_dir, pipeline_used = _run_dim_with_repair(
+                    dir_path=dir_path,
+                    pipeline=pipeline_to_run,
+                    output_dir=Path(output_dir),
                     overwrite=args.overwrite,
                     quality=args.quality,
                     single_camera=not args.multi_camera,
                     camera_model=args.camera_model,
                     max_images=args.max_images,
                     print_summary=args.print_summary,
-                    temp_root=(base_output_dir.parent / "_tmp") if not multi_run else (base_output_dir / "_tmp"),
+                    temp_root=tmp_root,
+                    fallback_pipeline=fallback_map.get(p),
+                    log=print,
                 )
             finally:
                 if sampler is not None:
@@ -691,25 +886,37 @@ def main(argv: list[str] | None = None) -> None:
             print(f"DIM_MATCHES={matches}")
             print(f"DIM_DATABASE={db}")
             fused: Path | None = None
+            dense_ok = True
+            dense_error: str | None = None
             if args.run_dense:
-                fused = _run_colmap_dense(
-                    colmap_bin=args.colmap_bin,
-                    images_dir=images_dir,
-                    database_path=Path(db),
-                    output_dir=Path(output_dir),
-                    overwrite=args.overwrite,
-                    patch_match_gpu=args.patch_match_gpu,
-                    geom_verification=not args.skip_geom_verification,
-                )
-                print(f"DENSE_FUSED={fused}")
+                try:
+                    fused = _run_colmap_dense(
+                        colmap_bin=args.colmap_bin,
+                        images_dir=images_dir,
+                        database_path=Path(db),
+                        output_dir=Path(output_dir),
+                        overwrite=args.overwrite,
+                        patch_match_gpu=args.patch_match_gpu,
+                        geom_verification=not args.skip_geom_verification,
+                    )
+                    print(f"DENSE_FUSED={fused}")
+                except Exception as exc:  # noqa: BLE001
+                    dense_ok = False
+                    dense_error = str(exc)
+                    print(f"[WARN] Dense failed for {p}: {exc}")
             entry: dict[str, Any] = {
                 "ok": True,
                 "features": str(feat),
                 "matches": str(matches),
                 "database": str(db),
             }
+            if pipeline_used != p:
+                entry["pipeline_used"] = pipeline_used
             if fused is not None:
                 entry["fused"] = str(fused)
+            if not dense_ok:
+                entry["dense_ok"] = False
+                entry["dense_error"] = dense_error
             if args.benchmark and metrics is not None:
                 entry["benchmark"] = asdict(metrics)
                 try:
@@ -718,6 +925,7 @@ def main(argv: list[str] | None = None) -> None:
                     summary = {}
                 row = {
                     "pipeline": p,
+                    "pipeline_used": pipeline_used,
                     "wall_time_s": metrics.wall_time_s,
                     "cpu_time_s": metrics.cpu_time_s,
                     "rss_peak_mb": metrics.rss_peak_mb,
@@ -734,11 +942,15 @@ def main(argv: list[str] | None = None) -> None:
                 print(f"BENCHMARK={json.dumps(row, ensure_ascii=False)}")
             results[p] = entry
         except Exception as e:  # noqa: BLE001
-            print(f"[FAIL] {p}: {e}")
-            results[p] = {"ok": False, "error": str(e)}
-            had_failure = True
+            if multi_run:
+                print(f"[SKIP] {p}: {e}")
+                results[p] = {"ok": False, "skipped": True, "error": str(e)}
+            else:
+                print(f"[FAIL] {p}: {e}")
+                results[p] = {"ok": False, "error": str(e)}
+                had_failure = True
 
-    if len(pipelines) > 1:
+    if multi_run:
         report_path = base_output_dir / "report.json"
         report_path.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"REPORT={report_path}")
@@ -755,7 +967,7 @@ def main(argv: list[str] | None = None) -> None:
             print(f"BENCHMARK_CSV={bench_csv}")
 
     # If this wrapper is used as a single-run step in the main pipeline, fail fast.
-    if len(pipelines) == 1 and had_failure and not args.probe_pipelines:
+    if single_run and had_failure:
         raise SystemExit(1)
 
 
