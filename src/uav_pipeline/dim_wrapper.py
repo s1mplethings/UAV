@@ -173,6 +173,42 @@ def _maybe_recover_from_error(err: Exception, log=print) -> bool:
     return False
 
 
+def _is_oom_error(msg: str) -> bool:
+    return ("CUDA out of memory" in msg) or ("out of memory" in msg and "CUDA" in msg)
+
+
+def _next_lower_quality(quality: str) -> str:
+    order = ["highest", "high", "medium", "low", "lowest"]
+    if quality not in order:
+        return quality
+    idx = order.index(quality)
+    return order[min(idx + 1, len(order) - 1)]
+
+
+def _reduce_max_images(max_images: int | None) -> int:
+    if max_images is None:
+        return 30
+    if max_images > 40:
+        return 40
+    if max_images > 30:
+        return 30
+    if max_images > 20:
+        return 20
+    if max_images > 10:
+        return 10
+    return max_images
+
+
+def _maybe_clear_cuda_cache(log=print) -> None:
+    try:
+        import torch  # type: ignore
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception as exc:  # noqa: BLE001
+        log(f"[WARN] Unable to clear CUDA cache: {exc}")
+
+
 def _probe_pipeline(
     dir_path: Path,
     pipeline: str,
@@ -750,7 +786,10 @@ def _run_dim_with_repair(
     """
     attempted_repair = False
     tried_fallback = False
+    oom_retries = 0
     active_pipeline = pipeline
+    quality_current = quality
+    max_images_current = max_images
     while True:
         try:
             feat, matches, db, images_dir = run_dim(
@@ -758,19 +797,37 @@ def _run_dim_with_repair(
                 active_pipeline,
                 output_dir,
                 overwrite=overwrite,
-                quality=quality,
+                quality=quality_current,
                 single_camera=single_camera,
                 camera_model=camera_model,
-                max_images=max_images,
+                max_images=max_images_current,
                 print_summary=print_summary,
                 temp_root=temp_root,
             )
             return feat, matches, db, images_dir, active_pipeline
         except Exception as exc:  # noqa: BLE001
+            msg = str(exc)
             if not attempted_repair and _maybe_recover_from_error(exc, log=log):
                 attempted_repair = True
                 log("[INFO] Retrying DIM after recovery step")
                 continue
+            if _is_oom_error(msg):
+                _maybe_clear_cuda_cache(log=log)
+                new_quality = _next_lower_quality(quality_current)
+                new_max_images = _reduce_max_images(max_images_current)
+                reduced = False
+                if new_quality != quality_current:
+                    log(f"[WARN] OOM: lowering quality {quality_current} -> {new_quality}")
+                    quality_current = new_quality
+                    reduced = True
+                if max_images_current != new_max_images:
+                    log(f"[WARN] OOM: limiting max_images {max_images_current} -> {new_max_images}")
+                    max_images_current = new_max_images
+                    reduced = True
+                if reduced and oom_retries < 3:
+                    oom_retries += 1
+                    log("[INFO] Retrying DIM with lower-memory settings")
+                    continue
             if active_pipeline == "sift+lightglue" and not tried_fallback:
                 tried_fallback = True
                 active_pipeline = fallback_pipeline or "sift+kornia_matcher"
@@ -869,6 +926,9 @@ def main(argv: list[str] | None = None) -> None:
 
     if not args.dir:
         raise SystemExit("--dir is required unless --list_pipelines is set")
+
+    if "PYTORCH_CUDA_ALLOC_CONF" not in os.environ:
+        os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True,max_split_size_mb:128"
 
     dir_path = Path(args.dir)
     pipelines: list[str]
