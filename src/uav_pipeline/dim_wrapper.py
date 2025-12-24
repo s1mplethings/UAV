@@ -240,6 +240,9 @@ def _probe_pipeline(
         )
         _ = ImageMatcher(cfg)
 
+    if "superglue" in pipeline:
+        _ensure_superglue_weights(None, log=log)
+
     for attempt in range(2):
         try:
             _try_probe(pipeline)
@@ -790,6 +793,9 @@ def _run_dim_with_repair(
     active_pipeline = pipeline
     quality_current = quality
     max_images_current = max_images
+    if "superglue" in pipeline:
+        _ensure_superglue_weights(None, log=log)
+
     while True:
         try:
             feat, matches, db, images_dir = run_dim(
