@@ -21,6 +21,7 @@ from tkinter import ttk
 
 from .dim_env import DeepImageMatchingEnv
 from .pipeline import PipelineConfig, run_cmd, run_colmap_mvs, run_dim as run_dim_step, run_pipeline
+from .user_config import load_section, update_section
 
 DIM_QUALITY_OPTIONS = ("highest", "high", "medium", "low", "lowest")
 CAMERA_MODEL_OPTIONS = ("simple-radial", "simple-pinhole", "pinhole", "opencv")
@@ -133,13 +134,16 @@ class PipelineGUI:
         self.root = root
         root.title("UAV DIM + COLMAP Pipeline")
         root.minsize(920, 720)
+        root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self.log_queue: queue.Queue[str] = queue.Queue()
         self.running = False
+        self._saved_config = load_section("gui")
 
         self._style()
         self._build_layout()
         self._build_log()
+        self._apply_saved_config()
         self._poll_logs()
 
     def _style(self) -> None:
@@ -505,6 +509,7 @@ class PipelineGUI:
             messagebox.showerror("参数错误", "GPU 参数必须是整数或留空。")
             return
 
+        self._save_config()
         self.running = True
         self._set_busy(True)
         mode = self.mode_var.get().strip()
@@ -603,6 +608,7 @@ class PipelineGUI:
             messagebox.showerror("参数错误", str(e))
             return
 
+        self._save_config()
         self.running = True
         self._set_busy(True)
         self._log("===== Probe DIM pipelines（仅初始化，不跑匹配） =====")
@@ -652,6 +658,7 @@ class PipelineGUI:
             messagebox.showerror("参数错误", str(e))
             return
 
+        self._save_config()
         self.running = True
         self._set_busy(True)
         run_dense = self.test_run_dense_var.get()
@@ -719,6 +726,77 @@ class PipelineGUI:
         self.running = False
         self._set_busy(False)
         self._log("===== 结束 =====")
+
+    def _apply_saved_config(self) -> None:
+        cfg = self._saved_config or {}
+        run = cfg.get("run", {})
+        test = cfg.get("test", {})
+
+        def _set_str(var: tk.StringVar, value: object) -> None:
+            if value is not None:
+                var.set(str(value))
+
+        def _set_bool(var: tk.BooleanVar, value: object) -> None:
+            if value is not None:
+                var.set(bool(value))
+
+        _set_str(self.work_dir_var, run.get("work_dir"))
+        _set_str(self.colmap_var, run.get("colmap_bin"))
+        _set_str(self.pipeline_var, run.get("pipeline"))
+        _set_str(self.dense_dir_var, run.get("dense_dir"))
+        _set_str(self.gpu_var, run.get("gpu"))
+        _set_str(self.pm_gpu_var, run.get("patch_match_gpu"))
+        _set_str(self.dim_quality_var, run.get("dim_quality"))
+        _set_str(self.dim_camera_model_var, run.get("dim_camera_model"))
+        _set_str(self.mode_var, run.get("mode"))
+
+        _set_bool(self.use_dim_env_var, run.get("use_dim_env"))
+        _set_bool(self.skip_dim_var, run.get("skip_dim"))
+        _set_bool(self.overwrite_var, run.get("overwrite"))
+        _set_bool(self.dim_multi_camera_var, run.get("dim_multi_camera"))
+        _set_bool(self.skip_geom_verify_var, run.get("skip_geom_verification"))
+
+        _set_str(self.test_pipelines_var, test.get("pipelines"))
+        _set_str(self.test_max_images_var, test.get("max_images"))
+        _set_str(self.test_quality_var, test.get("quality"))
+        _set_str(self.benchmark_interval_var, test.get("benchmark_interval"))
+        _set_bool(self.benchmark_var, test.get("benchmark"))
+        _set_bool(self.test_run_dense_var, test.get("run_dense"))
+        self._sync_mode_ui()
+
+    def _collect_gui_config(self) -> dict[str, dict[str, object]]:
+        run = {
+            "work_dir": self.work_dir_var.get().strip(),
+            "colmap_bin": self.colmap_var.get().strip(),
+            "pipeline": self.pipeline_var.get().strip(),
+            "dense_dir": self.dense_dir_var.get().strip(),
+            "gpu": self.gpu_var.get().strip(),
+            "patch_match_gpu": self.pm_gpu_var.get().strip(),
+            "dim_quality": self.dim_quality_var.get().strip(),
+            "dim_camera_model": self.dim_camera_model_var.get().strip(),
+            "mode": self.mode_var.get().strip(),
+            "use_dim_env": self.use_dim_env_var.get(),
+            "skip_dim": self.skip_dim_var.get(),
+            "overwrite": self.overwrite_var.get(),
+            "dim_multi_camera": self.dim_multi_camera_var.get(),
+            "skip_geom_verification": self.skip_geom_verify_var.get(),
+        }
+        test = {
+            "pipelines": self.test_pipelines_var.get().strip(),
+            "max_images": self.test_max_images_var.get().strip(),
+            "quality": self.test_quality_var.get().strip(),
+            "benchmark": self.benchmark_var.get(),
+            "benchmark_interval": self.benchmark_interval_var.get().strip(),
+            "run_dense": self.test_run_dense_var.get(),
+        }
+        return {"run": run, "test": test}
+
+    def _save_config(self) -> None:
+        update_section("gui", self._collect_gui_config())
+
+    def _on_close(self) -> None:
+        self._save_config()
+        self.root.destroy()
 
 
 def main() -> None:
