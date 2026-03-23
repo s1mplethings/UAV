@@ -16,6 +16,9 @@ from typing import Callable, Optional, Sequence
 
 from .dim_env import DeepImageMatchingEnv
 from .db_geometric_verification import geometric_verification_db
+from .point_cloud_postprocess import postprocess_point_cloud
+from .subprocess_runtime import format_command_failure
+from .video_input import prepare_work_dir_from_video
 
 LogFn = Callable[[str], None]
 
@@ -56,7 +59,7 @@ def run_cmd(
         log(line.rstrip())
     proc.wait()
     if proc.returncode:
-        raise subprocess.CalledProcessError(proc.returncode, cmd)
+        raise RuntimeError(format_command_failure(returncode=proc.returncode, cmd=cmd))
 
 
 def find_sparse_model_dir(work_dir: str, log: LogFn = _default_log) -> str:
@@ -100,10 +103,28 @@ class PipelineConfig:
     dim_single_camera: bool = True
     dim_camera_model: str = "simple-radial"
     geom_verification: bool = True
+    video_path: Optional[str] = None
+    video_sample_fps: float = 2.0
+    video_max_frames: Optional[int] = None
+    video_blur_threshold: float = 0.0
+    video_dedupe_threshold: float = 0.0
+    video_min_gap_sec: float = 0.0
 
 
 def run_dim(cfg: PipelineConfig, log: LogFn = _default_log) -> None:
     """Run deep-image-matching with the requested pipeline and GPU settings."""
+    prepare_work_dir_from_video(
+        work_dir=cfg.work_dir,
+        video_path=cfg.video_path,
+        sample_fps=cfg.video_sample_fps,
+        max_frames=cfg.video_max_frames,
+        blur_threshold=cfg.video_blur_threshold,
+        dedupe_threshold=cfg.video_dedupe_threshold,
+        min_gap_sec=cfg.video_min_gap_sec,
+        overwrite=cfg.overwrite,
+        log=log,
+    )
+
     if cfg.use_dim_env:
         env = DeepImageMatchingEnv(env_name=cfg.dim_env_name, log_fn=log)
         env.run_dim(
@@ -230,6 +251,7 @@ def run_colmap_mvs(cfg: PipelineConfig, log: LogFn = _default_log) -> str:
     ]
     run_cmd(cmd_fusion, log=log)
 
+    postprocess_point_cloud(fused_path=fused_path, log=log)
     log(f"[OK] Dense point cloud: {fused_path}")
     return fused_path
 
@@ -242,17 +264,33 @@ def run_pipeline(cfg: PipelineConfig, log: LogFn = _default_log) -> str:
     """
     work_dir = os.path.abspath(cfg.work_dir)
     if not os.path.isdir(work_dir):
-        raise RuntimeError(f"工作目录不存在: {work_dir}")
+        if cfg.video_path:
+            os.makedirs(work_dir, exist_ok=True)
+        else:
+            raise RuntimeError(f"工作目录不存在: {work_dir}")
 
     cfg.work_dir = work_dir
 
     log(f"[INFO] 工作目录: {work_dir}")
     log(f"[INFO] deep-image-matching pipeline: {cfg.pipeline}")
     log(f"[INFO] COLMAP bin: {cfg.colmap_bin}")
+    if cfg.video_path:
+        log(f"[INFO] Video input: {os.path.abspath(cfg.video_path)}")
+        log(
+            "[INFO] Video selection: "
+            f"sample_fps={cfg.video_sample_fps}, "
+            f"max_frames={cfg.video_max_frames}, "
+            f"blur_threshold={cfg.video_blur_threshold}, "
+            f"dedupe_threshold={cfg.video_dedupe_threshold}, "
+            f"min_gap_sec={cfg.video_min_gap_sec}"
+        )
     log(
         "[INFO] DIM env: "
         + (f"managed conda env ({cfg.dim_env_name})" if cfg.use_dim_env else "current Python env")
     )
+
+    if cfg.skip_dim and cfg.video_path:
+        raise RuntimeError("视频输入不能和 --skip_dim 一起使用；视频需要先抽帧并运行 DIM。")
 
     if not cfg.skip_dim:
         log("\n===== Step 1: deep-image-matching (SuperPoint + LightGlue) =====")

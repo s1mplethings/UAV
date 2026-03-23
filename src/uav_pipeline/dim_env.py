@@ -16,11 +16,40 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Callable, Iterable, Sequence
+from typing import Callable, Sequence
 
 LogFn = Callable[[str], None]
 
 from .db_geometric_verification import geometric_verification_db
+from .subprocess_runtime import format_command_failure
+
+
+def _resolve_runtime_paths() -> tuple[Path, tuple[Path, ...]]:
+    """
+    Separate the persistent env location from the import roots used by the managed env.
+
+    - Source tree: keep the env under src/uav_pipeline/ and import from src/.
+    - Frozen app: keep the env next to the executable, but import managed-env helpers
+      only from an isolated runtime_support directory inside the frozen bundle.
+    """
+    if getattr(sys, "frozen", False):
+        env_base_dir = Path(sys.executable).resolve().parent
+        import_roots: list[Path] = []
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            runtime_support = Path(meipass) / "runtime_support"
+            if runtime_support.exists():
+                import_roots.append(runtime_support)
+        for candidate in (
+            env_base_dir / "_internal" / "runtime_support",
+            env_base_dir / "runtime_support",
+        ):
+            if candidate.exists():
+                import_roots.append(candidate)
+        return env_base_dir, tuple(import_roots)
+
+    package_dir = Path(__file__).resolve().parent
+    return package_dir, (package_dir.parent,)
 
 
 class DeepImageMatchingEnv:
@@ -43,13 +72,7 @@ class DeepImageMatchingEnv:
         install_cuda_torch: bool = True,
         numpy_spec: str = "numpy<2",
     ):
-        # Compatible with PyInstaller: sys._MEIPASS points to the unpacked temp dir.
-        if hasattr(sys, "_MEIPASS"):
-            base_dir = Path(sys._MEIPASS)  # type: ignore[attr-defined]
-        else:
-            base_dir = Path(__file__).resolve().parent
-
-        self.base_dir = base_dir
+        self.base_dir, self.import_roots = _resolve_runtime_paths()
         self.env_dir = self.base_dir / env_name
         # conda -p puts python.exe directly under env_dir on Windows; use bin/python on POSIX.
         if os.name == "nt":
@@ -99,7 +122,7 @@ class DeepImageMatchingEnv:
             self.log(line.rstrip())
         proc.wait()
         if check and proc.returncode:
-            raise subprocess.CalledProcessError(proc.returncode, cmd)
+            raise RuntimeError(format_command_failure(returncode=proc.returncode, cmd=cmd))
         return proc.returncode
 
     def ensure_env(self) -> Path:
@@ -211,8 +234,13 @@ class DeepImageMatchingEnv:
         env_vars = os.environ.copy()
         if gpu is not None:
             env_vars["CUDA_VISIBLE_DEVICES"] = str(gpu)
-        # Make sure our source tree is importable inside the managed env.
-        env_vars["PYTHONPATH"] = str(self.base_dir.parent)
+        # Keep existing PYTHONPATH and prepend the roots that expose uav_pipeline.
+        pythonpath_parts = [str(path) for path in self.import_roots if path.exists()]
+        existing_pythonpath = env_vars.get("PYTHONPATH")
+        if existing_pythonpath:
+            pythonpath_parts.append(existing_pythonpath)
+        if pythonpath_parts:
+            env_vars["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
         return env_vars
 
     def run_dim_wrapper(self, argv: Sequence[str], gpu: int | None = None) -> None:

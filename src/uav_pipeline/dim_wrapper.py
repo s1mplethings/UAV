@@ -26,6 +26,8 @@ from typing import Any
 
 import yaml
 
+from .point_cloud_postprocess import postprocess_point_cloud
+
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp"}
 
 PIPELINE_ALIASES: dict[str, dict] = {
@@ -670,6 +672,7 @@ def _run_colmap_dense(
             str(fused_path),
         ]
     )
+    postprocess_point_cloud(fused_path=str(fused_path), log=print)
     return fused_path
 
 

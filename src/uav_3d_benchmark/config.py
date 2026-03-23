@@ -1,9 +1,10 @@
-import os
+from pathlib import Path
 
-PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-DATA_ROOT = os.path.join(PROJECT_ROOT, "data")
-OUTPUT_ROOT = os.path.join(PROJECT_ROOT, "outputs")
+PROJECT_ROOT = str(_PROJECT_ROOT)
+DATA_ROOT = str(_PROJECT_ROOT / "data")
+OUTPUT_ROOT = str(_PROJECT_ROOT / "outputs")
 
-EUROC_ROOT = os.path.join(DATA_ROOT, "euroc")
-USEGEO_ROOT = os.path.join(DATA_ROOT, "usegeo")
+EUROC_ROOT = str(_PROJECT_ROOT / "data" / "euroc")
+USEGEO_ROOT = str(_PROJECT_ROOT / "data" / "usegeo")

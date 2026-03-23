@@ -26,6 +26,7 @@ Homepage = "https://example.com/uav-3d-benchmark"
 [project.scripts]
 uav-dim-colmap = "uav_pipeline.cli:main"
 uav-gui = "uav_pipeline.gui:main"
+uav-workbench-gui = "uav_pipeline.workbench_gui:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
