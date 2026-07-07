@@ -55,3 +55,20 @@ points3D.txt
 *.sqlite
 *.db-shm
 *.db-wal
+
+# Local secrets and environment files
+.env
+.env.*
+!.env.example
+openai.env
+*.key
+*.pem
+*.p12
+*.pfx
+*.secret
+*.credentials
+*.token
+*_token.txt
+secrets/
+private/
+.agent_private/
