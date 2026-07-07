@@ -61,6 +61,7 @@ points3D.txt
 .env.*
 !.env.example
 openai.env
+.runtime_secrets/
 *.key
 *.pem
 *.p12
