@@ -69,7 +69,7 @@ python scripts/build_workbench_gui.py
 - 如果已经有点云，可以直接点 `MeshLab 打开点云`；没有 MeshLab 时，工作台会先自动检测或下载官方 Windows 版再打开
 - 在最右侧显示回答，并把四视图 / 总览图 / API 原始 JSON 保存到输出目录下的 `analysis/`
 - 左侧 `COLMAP` 支持 `自动检测/下载 COLMAP`：优先探测本机安装，找不到时在 Windows 下自动下载官方 COLMAP 发布包到应用内部目录并回填路径
-- 工作台右侧默认只保留 API key、提示词和回答区域；模型、Base URL、detail 等高级参数默认隐藏，继续走保存值、环境变量、应用同目录 `openai.env` 或内置默认值
+- 工作台右侧默认只保留 API key、提示词和回答区域；模型、Base URL、detail 等高级参数默认隐藏，继续走保存值、环境变量、应用同目录本地环境文件或内置默认值
 
 `uav-gui` 仍然保留，适合原来的多标签运维式操作；如果你要的是单独、完整、面向“视频 -> 点云 -> API 分析”的新界面，优先用 `uav-workbench-gui`。
 
@@ -128,7 +128,7 @@ python scripts/run_slam_stub.py
 - `video_input.json` 现在也会记录视频筛帧参数；筛帧参数变了就不会错误复用旧抽帧结果。
 - `dense/fused.ply` 现在会在输出后自动做一次轻量后处理：按坐标分位数去掉少量极端离群点，并把点云包围盒中心平移到原点，便于在查看器里居中显示。
 - GUI 的 OpenAI 分析会优先读取界面里的 API key；留空时回退到环境变量 `OPENAI_API_KEY`。
-- 如果你希望打包后的工作台直接带默认 API 配置，可以在 `uav-workbench-gui.exe` 同目录放一个 `openai.env`，里面写 `OPENAI_API_KEY=...`，也可选填 `OPENAI_BASE_URL=...`、`OPENAI_MODEL=...`；GUI 会读取它，但不会把 key 写回配置文件。
+- 打包后的工作台可以从应用同目录的本地环境文件读取默认 API 配置；这个文件只用于本地运行，已在 `.gitignore` 中忽略，不能提交到仓库。推荐优先使用系统环境变量或 GitHub Actions Secrets。
 - 如果你使用兼容 OpenAI 协议的第三方网关，也可以在 GUI 里填写自定义 `API Base URL`；默认仍是官方 `https://api.openai.com/v1`。
 - 如果 API 调用失败，工作台现在会把失败原因同时写进右侧回答区，而不只是弹一个错误框。
 - GUI 工作台会额外在 `analysis/api_views/` 下生成四张单独图片，发送给 API 的就是这四张，而不是只发一张拼图。
